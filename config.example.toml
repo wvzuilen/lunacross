@@ -1,0 +1,52 @@
+# Voorbeeldconfiguratie voor LunaCross
+# Kopieer dit bestand naar config.toml om je eigen waarden in te stellen.
+
+# Exacte waarnemerslocatie (WGS-84)
+latitude = 52.3731
+longitude = 4.8926
+elevation_m = 2.0
+
+# URL naar de tar1090/readsb JSON-feed van je ADS-B ontvanger
+adsb_url = "http://adsb.local:8090/data/aircraft.json"
+
+# Poll-interval in seconden tijdens live monitoring
+poll_interval_s = 1.0
+
+# Marge (in graden) rond de maanrand voor een NEAR_MISS / INCOMING waarschuwing
+alert_margin_deg = 0.5
+
+# Aantal seconden vooruit kijken voor trajectvoorspelling
+predict_horizon_s = 120.0
+
+# Minimale maanhoogte in graden voordat transits/voorspellingen actief worden
+min_moon_alt_deg = 0.0
+
+# Maximale ouderdom van de laatste ADS-B positie in seconden
+max_seen_pos_s = 30.0
+
+# JSONL logbestand voor gedetecteerde events
+log_file = "transits.jsonl"
+
+# Toon een macOS-melding bij een transit of naderende transit
+notify_macos = true
+
+# Optionele webhook URL (bijv. voor n8n of Home Assistant)
+# webhook_url = "http://localhost:5678/webhook/lunacross"
+
+# Pushover notificaties (maak een app aan op https://pushover.net/apps/build)
+# pushover_app_token = "a..."
+# pushover_user_key = "u..."
+# Optioneel specifiek apparaat (leeg = alle apparaten)
+# pushover_device = "iphone"
+# Optioneel melding-geluid (bijv. "cosmic", "magic", "siren")
+# pushover_sound = "cosmic"
+# Prioriteit (-2 t/m 1; 1 = hoge prioriteit met direct geluid)
+pushover_priority = 1
+# Welke events via Pushover sturen (komma-gescheiden: INCOMING, TRANSIT, NEAR_MISS)
+pushover_events = "INCOMING,TRANSIT"
+
+# Cache-map voor Skyfield ephemeris-bestanden (de421.bsp)
+ephemeris_dir = ".cache/skyfield"
+
+# Maximaal aantal dichtstbijzijnde vliegtuigen in het dashboard
+top_n = 12

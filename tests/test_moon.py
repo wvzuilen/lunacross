@@ -1,0 +1,44 @@
+"""Unit tests voor topocentrische maanpositie met Skyfield."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from lunacross.moon import MoonTracker, compass_direction, moon_phase_name
+
+
+def test_moon_tracker_fixed_timestamp(tmp_path) -> None:
+    tracker = MoonTracker(
+        latitude=52.3731,
+        longitude=4.8926,
+        elevation_m=2.0,
+        ephemeris_dir=".cache/skyfield",
+    )
+    dt = datetime(2026, 11, 24, 21, 45, 0, tzinfo=timezone.utc)
+    pos = tracker.get_position(dt)
+
+    assert -90.0 <= pos.altitude_deg <= 90.0
+    assert 0.0 <= pos.azimuth_deg < 360.0
+    assert 350000.0 <= pos.distance_km <= 410000.0
+    assert 0.45 <= pos.angular_diameter_deg <= 0.60
+    assert 0.0 <= pos.illumination_pct <= 100.0
+    assert pos.is_above_horizon == (pos.altitude_deg > 0.0)
+
+    rs = tracker.next_rise_set(dt)
+    assert rs.next_rise_utc is not None
+    assert rs.next_set_utc is not None
+    assert rs.next_rise_utc > dt
+    assert rs.next_set_utc > dt
+
+
+def test_compass_and_phase_helpers() -> None:
+    assert compass_direction(0.0) == "N"
+    assert compass_direction(90.0) == "O"
+    assert compass_direction(180.0) == "Z"
+    assert compass_direction(270.0) == "W"
+    assert compass_direction(359.0) == "N"
+
+    assert moon_phase_name(0.0) == "Nieuwe maan"
+    assert moon_phase_name(90.0) == "Eerste kwartier"
+    assert moon_phase_name(180.0) == "Volle maan"
+    assert moon_phase_name(270.0) == "Laatste kwartier"

@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.cache/
+transits.jsonl
+monitor.log
+config.toml
+.env
+.env.*
+*.bsp
+.DS_Store
+dist/
+build/
+*.egg-info/
