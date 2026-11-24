@@ -1,4 +1,4 @@
-"""Unit tests voor topocentrische maanpositie met Skyfield."""
+"""Unit tests for topocentric Moon position using Skyfield."""
 
 from __future__ import annotations
 
@@ -33,12 +33,12 @@ def test_moon_tracker_fixed_timestamp(tmp_path) -> None:
 
 def test_compass_and_phase_helpers() -> None:
     assert compass_direction(0.0) == "N"
-    assert compass_direction(90.0) == "O"
-    assert compass_direction(180.0) == "Z"
+    assert compass_direction(90.0) == "E"
+    assert compass_direction(180.0) == "S"
     assert compass_direction(270.0) == "W"
     assert compass_direction(359.0) == "N"
 
-    assert moon_phase_name(0.0) == "Nieuwe maan"
-    assert moon_phase_name(90.0) == "Eerste kwartier"
-    assert moon_phase_name(180.0) == "Volle maan"
-    assert moon_phase_name(270.0) == "Laatste kwartier"
+    assert moon_phase_name(0.0) == "New Moon"
+    assert moon_phase_name(90.0) == "First Quarter"
+    assert moon_phase_name(180.0) == "Full Moon"
+    assert moon_phase_name(270.0) == "Last Quarter"

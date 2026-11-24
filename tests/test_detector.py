@@ -1,4 +1,4 @@
-"""Unit tests voor maanovergang-detectie en voorspelling."""
+"""Unit tests for lunar transit detection and trajectory prediction."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def _test_moon(alt_deg: float = 35.0, az_deg: float = 180.0) -> MoonPosition:
         angular_diameter_deg=0.518,
         illumination_pct=85.0,
         phase_deg=140.0,
-        phase_name="Wassende maan",
+        phase_name="Waxing Gibbous",
         is_above_horizon=alt_deg > 0.0,
     )
 
@@ -78,7 +78,7 @@ def test_direct_transit_and_deduplication() -> None:
     assert len(events) == 1
     assert events[0].event_type == "TRANSIT"
 
-    # Tweede poll 2s later mag geen duplicaat-event sturen binnen cooldown
+    # A second poll 2s later must not re-emit within the cooldown window
     _, events2 = detector.evaluate(moon, [ac], now_utc=t0 + timedelta(seconds=2))
     assert events2 == []
 
@@ -88,7 +88,7 @@ def test_incoming_prediction_and_upgrade_to_transit() -> None:
     cross_lat, cross_lon, alt_m = _aircraft_on_moon_line(moon)
     gs_kt = 450.0
     track_deg = 90.0
-    # Plaats vliegtuig 30s vóór het kruispunt op koers 90° (dus ten westen van het kruispunt)
+    # Place aircraft 30s before the crossing point on heading 90° (west of the crossing point)
     start_lat, start_lon, _ = extrapolate_position(
         cross_lat,
         cross_lon,
@@ -137,7 +137,7 @@ def test_incoming_prediction_and_upgrade_to_transit() -> None:
     assert len(events) == 1
     assert events[0].event_type == "INCOMING"
 
-    # Upgrade naar TRANSIT 30s later moet meteen een event geven ondanks cooldown
+    # Upgrading to TRANSIT 30s later must emit immediately despite cooldown
     ac_transit = Aircraft(
         hex=ac_incoming.hex,
         flight=ac_incoming.flight,
@@ -164,10 +164,8 @@ def test_incoming_prediction_and_upgrade_to_transit() -> None:
 
 def test_near_miss_status() -> None:
     moon = _test_moon(alt_deg=35.0, az_deg=180.0)
-    # Vliegtuig net naast de maan (0.45° oostelijker), wegvliegend zodat geen TRANSIT
     cross_lat, cross_lon, alt_m = _aircraft_on_moon_line(moon)
-    # Verschuif ~0.45° in azimut -> op 180° en 35° hoogte is schuine afstand ~15.3 km * tan(0.45°) ~ 120 m?
-    # Wacht: 10.66 km / sin(35°) = 18.6 km schuine afstand -> 0.45° = 146 m naar het oosten.
+    # Offset ~0.45° east of the lunar center (~146 m at 18.6 km slant range)
     near_lat, near_lon, _ = extrapolate_position(
         cross_lat,
         cross_lon,

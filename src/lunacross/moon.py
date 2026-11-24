@@ -1,4 +1,4 @@
-"""Topocentrische berekening van de maanpositie met Skyfield."""
+"""Topocentric Moon position calculation using Skyfield."""
 
 from __future__ import annotations
 
@@ -14,17 +14,17 @@ MOON_RADIUS_KM = 1737.4
 
 _COMPASS_POINTS = (
     "N",
-    "NNO",
-    "NO",
-    "ONO",
-    "O",
-    "OZO",
-    "ZO",
-    "ZZO",
-    "Z",
-    "ZZW",
-    "ZW",
-    "WZW",
+    "NNE",
+    "NE",
+    "ENE",
+    "E",
+    "ESE",
+    "SE",
+    "SSE",
+    "S",
+    "SSW",
+    "SW",
+    "WSW",
     "W",
     "WNW",
     "NW",
@@ -33,34 +33,34 @@ _COMPASS_POINTS = (
 
 
 def compass_direction(azimuth_deg: float) -> str:
-    """Geef de 16-punts Nederlandse windstreek voor een azimut in graden."""
+    """Return the 16-point compass direction for an azimuth in degrees."""
     idx = int(((azimuth_deg % 360.0) + 11.25) // 22.5) % 16
     return _COMPASS_POINTS[idx]
 
 
 def moon_phase_name(phase_deg: float) -> str:
-    """Geef de Nederlandse naam van de maanfase voor een fasehoek (0°-360°)."""
+    """Return the English Moon phase name for a phase angle (0°-360°)."""
     angle = phase_deg % 360.0
     if angle < 22.5 or angle >= 337.5:
-        return "Nieuwe maan"
+        return "New Moon"
     if angle < 67.5:
-        return "Jonge maansikkel"
+        return "Waxing Crescent"
     if angle < 112.5:
-        return "Eerste kwartier"
+        return "First Quarter"
     if angle < 157.5:
-        return "Wassende maan"
+        return "Waxing Gibbous"
     if angle < 202.5:
-        return "Volle maan"
+        return "Full Moon"
     if angle < 247.5:
-        return "Afnemende maan"
+        return "Waning Gibbous"
     if angle < 292.5:
-        return "Laatste kwartier"
-    return "Asgrauwe maansikkel"
+        return "Last Quarter"
+    return "Waning Crescent"
 
 
 @dataclass(frozen=True, slots=True)
 class MoonPosition:
-    """Topocentrische positie en eigenschappen van de maan op een tijdstip."""
+    """Topocentric position and physical appearance of the Moon at an instant."""
 
     timestamp_utc: datetime
     altitude_deg: float
@@ -76,7 +76,7 @@ class MoonPosition:
 
 @dataclass(frozen=True, slots=True)
 class MoonRiseSet:
-    """Eerstvolgende maansopkomst en maansondergang in UTC."""
+    """Next moonrise and moonset timestamps in UTC."""
 
     next_rise_utc: datetime | None
     next_set_utc: datetime | None
@@ -91,7 +91,7 @@ def _ensure_utc(dt: datetime | None) -> datetime:
 
 
 class MoonTracker:
-    """Berekent de actuele positie, grootte, verlichting en opkomst/ondergang van de maan."""
+    """Computes apparent Moon position, angular size, illumination, and rise/set times."""
 
     def __init__(
         self,
@@ -114,7 +114,7 @@ class MoonTracker:
         self.observer = self.earth + self.topos
 
     def get_position(self, dt: datetime | None = None) -> MoonPosition:
-        """Bereken schijnbare topocentrische hoogte, azimut en hoekdiameter van de maan."""
+        """Compute apparent topocentric altitude, azimuth, and angular diameter of the Moon."""
         dt_utc = _ensure_utc(dt)
         t = self.ts.from_datetime(dt_utc)
 
@@ -142,7 +142,7 @@ class MoonTracker:
         )
 
     def next_rise_set(self, dt: datetime | None = None) -> MoonRiseSet:
-        """Zoek eerstvolgende maansopkomst en maansondergang binnen 36 uur."""
+        """Find the next moonrise and moonset within the next 36 hours."""
         dt_utc = _ensure_utc(dt)
         t0 = self.ts.from_datetime(dt_utc)
         t1 = self.ts.from_datetime(dt_utc + timedelta(hours=36))

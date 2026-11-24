@@ -1,4 +1,4 @@
-"""Configuratiebeheer voor LunaCross."""
+"""Configuration management for LunaCross."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any
 
 @dataclass(slots=True)
 class Config:
-    """Instellingen voor waarnemerslocatie, ADS-B feed en transitdetectie."""
+    """Settings for observer location, ADS-B feed, transit detection, and notifications."""
 
     latitude: float = 52.3731
     longitude: float = 4.8926
@@ -36,9 +36,9 @@ class Config:
 
 
 def _parse_env_value(raw: str, current: Any) -> Any:
-    """Converteer een environment-variabele naar het verwachte type."""
+    """Convert an environment variable string to the target field type."""
     if isinstance(current, bool):
-        return raw.strip().lower() in {"1", "true", "yes", "ja", "on"}
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
     if isinstance(current, int):
         return int(raw)
     if isinstance(current, float):
@@ -53,11 +53,11 @@ def load_config(
     config_path: Path | None = None,
     cli_overrides: dict[str, Any] | None = None,
 ) -> Config:
-    """Laad configuratie met prioriteit: defaults < config.toml < env < CLI."""
+    """Load configuration with precedence: defaults < config.toml < env < CLI."""
     cfg = Config()
     valid_fields = {f.name: f for f in fields(Config)}
 
-    # 1. TOML-bestand (expliciet pad of ./config.toml indien aanwezig)
+    # 1. TOML file (explicit path or ./config.toml if present)
     resolved_path = config_path
     if resolved_path is None:
         default_toml = Path("config.toml")
@@ -66,7 +66,7 @@ def load_config(
 
     if resolved_path is not None:
         if not resolved_path.is_file():
-            raise FileNotFoundError(f"Configuratiebestand niet gevonden: {resolved_path}")
+            raise FileNotFoundError(f"Configuration file not found: {resolved_path}")
         with resolved_path.open("rb") as fh:
             raw_toml = tomllib.load(fh)
         for key, value in raw_toml.items():
@@ -81,14 +81,14 @@ def load_config(
                 else:
                     setattr(cfg, key, value)
 
-    # 2. Omgevingsvariabelen (LUNACROSS_<FIELD_UPPER>)
+    # 2. Environment variables (LUNACROSS_<FIELD_UPPER>)
     for name in valid_fields:
         env_key = f"LUNACROSS_{name.upper()}"
         if env_key in os.environ:
             current = getattr(cfg, name)
             setattr(cfg, name, _parse_env_value(os.environ[env_key], current))
 
-    # 3. CLI-overrides (negeer None)
+    # 3. CLI overrides (ignore None)
     if cli_overrides:
         for key, value in cli_overrides.items():
             if value is not None and key in valid_fields:

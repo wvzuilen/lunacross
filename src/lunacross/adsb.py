@@ -1,4 +1,4 @@
-"""Client en parser voor tar1090 / readsb ADS-B JSON-data."""
+"""HTTP client and parser for tar1090 / readsb ADS-B JSON data."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from lunacross.geometry import FEET_TO_METERS
 
 @dataclass(frozen=True, slots=True)
 class Aircraft:
-    """Actuele ADS-B meting van één vliegtuig in de lucht."""
+    """Current ADS-B state vector of an airborne aircraft."""
 
     hex: str
     flight: str
@@ -35,7 +35,7 @@ class Aircraft:
 
 @dataclass(frozen=True, slots=True)
 class AdsbSnapshot:
-    """Momentopname van alle bruikbare vliegtuigen uit een ADS-B poll."""
+    """Snapshot of all usable airborne aircraft from a single ADS-B poll."""
 
     timestamp_unix: float
     aircraft: list[Aircraft]
@@ -47,7 +47,7 @@ def _is_number(value: Any) -> bool:
 
 
 def parse_aircraft_payload(data: dict[str, Any], max_seen_pos_s: float = 30.0) -> AdsbSnapshot:
-    """Parseer een tar1090/readsb aircraft.json dictionary naar een AdsbSnapshot."""
+    """Parse a tar1090/readsb aircraft.json dictionary into an AdsbSnapshot."""
     raw_list = data.get("aircraft") or []
     timestamp_unix = float(data.get("now") or 0.0)
     parsed: list[Aircraft] = []
@@ -75,7 +75,7 @@ def parse_aircraft_payload(data: dict[str, Any], max_seen_pos_s: float = 30.0) -
             altitude_ft = float(alt_baro)
             altitude_source = "baro"
         else:
-            # Sla grondverkeer ("ground") en vliegtuigen zonder hoogte over
+            # Skip ground traffic ("ground") and aircraft without altitude
             continue
 
         geom_rate = item.get("geom_rate")
@@ -134,7 +134,7 @@ def _derive_receiver_url(adsb_url: str) -> str:
 
 
 class AdsbClient:
-    """Synchrone HTTP-client voor tar1090/readsb JSON endpoints."""
+    """Synchronous HTTP client for tar1090/readsb JSON endpoints."""
 
     def __init__(self, adsb_url: str, timeout_s: float = 3.0) -> None:
         self.adsb_url = adsb_url
@@ -151,13 +151,13 @@ class AdsbClient:
         self._client.close()
 
     def fetch_snapshot(self, max_seen_pos_s: float = 30.0) -> AdsbSnapshot:
-        """Haal actuele vliegtuigen op vanaf /data/aircraft.json."""
+        """Fetch live aircraft from /data/aircraft.json."""
         resp = self._client.get(self.adsb_url)
         resp.raise_for_status()
         return parse_aircraft_payload(resp.json(), max_seen_pos_s=max_seen_pos_s)
 
     def fetch_receiver_location(self) -> tuple[float, float] | None:
-        """Haal geconfigureerde ontvangercoördinaten op uit /data/receiver.json."""
+        """Fetch configured receiver coordinates from /data/receiver.json."""
         resp = self._client.get(self.receiver_url)
         resp.raise_for_status()
         data = resp.json()

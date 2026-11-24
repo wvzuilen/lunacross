@@ -1,4 +1,4 @@
-"""Unit tests voor TransitNotifier (JSONL-logging en Pushover)."""
+"""Unit tests for TransitNotifier (JSONL logging and Pushover)."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def _sample_event(event_type: EventType = "INCOMING") -> TransitEvent:
         angular_diameter_deg=0.56,
         illumination_pct=99.7,
         phase_deg=180.0,
-        phase_name="Volle maan",
+        phase_name="Full Moon",
         is_above_horizon=True,
     )
     ac = Aircraft(
@@ -125,15 +125,15 @@ def test_pushover_sends_incoming_and_transit_and_filters_near_miss(monkeypatch, 
     assert data1["sound"] == "cosmic"
     assert data1["priority"] == "1"
     assert data1["url"] == "http://adsb.local:8090/?icao=484161"
-    assert "Maanovergang over 38s: KLM999" in data1["title"]
-    assert "nadert de maan" in data1["message"]
-    assert "Kruist maanschijf" in data1["message"]
+    assert "Lunar transit in 38s: KLM999" in data1["title"]
+    assert "approaching the Moon" in data1["message"]
+    assert "Crossing lunar disk" in data1["message"]
 
     _, data2 = calls[1]
-    assert "NU voor de maan: KLM999" in data2["title"]
-    assert "vliegt nu voor de maan langs" in data2["message"]
+    assert "Crossing Moon NOW: KLM999" in data2["title"]
+    assert "crossing in front of the Moon now" in data2["message"]
 
-    # Alle 3 events (inclusief NEAR_MISS) zijn wel gelogd naar JSONL
+    # All 3 events (including NEAR_MISS) are still written to JSONL
     lines = log_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 3
     parsed_types = [json.loads(line)["event_type"] for line in lines]

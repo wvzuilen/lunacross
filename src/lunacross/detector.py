@@ -1,4 +1,4 @@
-"""Transitdetectie en baanvoorspelling voor vliegtuigen langs de maan."""
+"""Lunar transit detection and trajectory prediction for airborne aircraft."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ _STATUS_PRIORITY: dict[SightingStatus, int] = {
     "TRACKING": 3,
 }
 
-# Hogere ernst mag de cooldown voor een lagere ernst meteen doorbreken
+# Higher-severity statuses bypass the cooldown of lower-severity alerts immediately
 _EVENT_SEVERITY: dict[EventType, int] = {
     "INCOMING": 1,
     "NEAR_MISS": 2,
@@ -37,7 +37,7 @@ _EVENT_SEVERITY: dict[EventType, int] = {
 
 @dataclass(frozen=True, slots=True)
 class AircraftSighting:
-    """Evaluatie van één vliegtuig ten opzichte van de maan."""
+    """Evaluation of a single aircraft relative to the Moon."""
 
     aircraft: Aircraft
     sky_pos: SkyPosition
@@ -53,7 +53,7 @@ class AircraftSighting:
 
 @dataclass(frozen=True, slots=True)
 class TransitEvent:
-    """Gebeurtenis om te loggen en/of een melding voor te sturen."""
+    """Alert event emitted for logging and notifications."""
 
     event_type: EventType
     timestamp_utc: datetime
@@ -62,7 +62,7 @@ class TransitEvent:
 
 
 class TransitDetector:
-    """Detecteert directe maanovergangen, near-misses en naderende transits."""
+    """Detects live lunar transits, near misses, and incoming predicted transits."""
 
     def __init__(
         self,
@@ -82,7 +82,7 @@ class TransitDetector:
         self.min_moon_alt_deg = min_moon_alt_deg
         self.cooldown_s = cooldown_s
 
-        # Per vliegtuig-hex: (laatste tijdstip, laatste ernst)
+        # Per aircraft hex: (last alert timestamp, last severity)
         self._last_alerts: dict[str, tuple[datetime, int]] = {}
 
     def _current_aircraft_coords(self, ac: Aircraft) -> tuple[float, float, float]:
@@ -141,7 +141,7 @@ class TransitDetector:
             )
             return sep, sky.altitude_deg
 
-        # Grove scan om de 2 seconden
+        # Coarse scan every 2 seconds
         coarse_step = 2.0
         steps = int(self.predict_horizon_s / coarse_step)
         best_t = 0.0
@@ -153,7 +153,7 @@ class TransitDetector:
                 best_sep = sep
                 best_t = t_s
 
-        # Verfijn rondom het minimum met stappen van 0.1s
+        # Refine around the minimum in 0.1s steps
         win_start = max(0.0, best_t - coarse_step)
         win_end = min(self.predict_horizon_s, best_t + coarse_step)
         fine_step = 0.1
@@ -197,7 +197,7 @@ class TransitDetector:
         aircraft_list: list[Aircraft],
         now_utc: datetime | None = None,
     ) -> tuple[list[AircraftSighting], list[TransitEvent]]:
-        """Beoordeel alle vliegtuigen t.o.v. de maan en retourneer gesorteerde waarnemingen + events."""
+        """Evaluate all aircraft against the Moon and return sorted sightings and new events."""
         current_utc = now_utc or datetime.now(timezone.utc)
         if current_utc.tzinfo is None:
             current_utc = current_utc.replace(tzinfo=timezone.utc)

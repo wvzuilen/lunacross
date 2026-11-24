@@ -1,4 +1,4 @@
-"""Logging (JSONL), macOS-meldingen, Pushover en optionele webhooks voor transits."""
+"""JSONL logging, macOS notifications, Pushover alerts, and optional webhooks."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def _escape_applescript(text: str) -> str:
 
 
 def build_tar1090_aircraft_url(adsb_url: str | None, hex_code: str) -> str | None:
-    """Bouw een directe tar1090-link naar het vliegtuig op de lokale radar."""
+    """Build a direct tar1090 map URL pointing to the aircraft by ICAO hex."""
     if not adsb_url or not hex_code:
         return None
     parts = urlsplit(adsb_url)
@@ -32,7 +32,7 @@ def build_tar1090_aircraft_url(adsb_url: str | None, hex_code: str) -> str | Non
 
 
 class TransitNotifier:
-    """Verwerkt gedetecteerde maanovergangen naar logbestand, macOS, Pushover en webhook."""
+    """Dispatches detected lunar transit events to JSONL log, macOS, Pushover, and webhook."""
 
     def __init__(
         self,
@@ -65,7 +65,7 @@ class TransitNotifier:
 
     @property
     def pushover_enabled(self) -> bool:
-        """Geef aan of Pushover-credentials compleet zijn."""
+        """Return True when both Pushover credentials are configured."""
         return bool(self.pushover_app_token and self.pushover_user_key)
 
     def _build_payload(self, event: TransitEvent) -> dict[str, object]:
@@ -112,20 +112,20 @@ class TransitNotifier:
         s = event.sighting
         ac = s.aircraft
         if event.event_type == "TRANSIT":
-            title = f"Maanovergang NU: {ac.flight}"
+            title = f"Lunar Transit NOW: {ac.flight}"
             body = (
-                f"Afstand {s.angular_sep_deg:.2f}° ({s.moon_radii:.1f}R) "
-                f"op {ac.altitude_ft:.0f} ft"
+                f"Separation {s.angular_sep_deg:.2f}° ({s.moon_radii:.1f}R) "
+                f"at {ac.altitude_ft:,.0f} ft"
             )
         elif event.event_type == "INCOMING":
-            title = f"Maanovergang over {s.time_to_closest_s:.0f}s: {ac.flight}"
+            title = f"Lunar Transit in {s.time_to_closest_s:.0f}s: {ac.flight}"
             body = (
-                f"Min. scheiding {s.min_predicted_sep_deg:.2f}° "
-                f"op {ac.altitude_ft:.0f} ft"
+                f"Min. separation {s.min_predicted_sep_deg:.2f}° "
+                f"at {ac.altitude_ft:,.0f} ft"
             )
         else:
-            title = f"Vliegtuig vlakbij maan: {ac.flight}"
-            body = f"Scheiding {s.angular_sep_deg:.2f}° op {ac.altitude_ft:.0f} ft"
+            title = f"Aircraft near Moon: {ac.flight}"
+            body = f"Separation {s.angular_sep_deg:.2f}° at {ac.altitude_ft:,.0f} ft"
 
         script = (
             f'display notification "{_escape_applescript(body)}" '
@@ -147,48 +147,46 @@ class TransitNotifier:
         m = event.moon
         type_suffix = f" ({ac.aircraft_type})" if ac.aircraft_type else ""
         moon_info = (
-            f"Maan: alt {m.altitude_deg:.1f}°, az {m.azimuth_deg:.1f}° "
+            f"Moon: alt {m.altitude_deg:.1f}°, az {m.azimuth_deg:.1f}° "
             f"({compass_direction(m.azimuth_deg)})"
         )
-        plane_info = f"Hoogte: {ac.altitude_ft:,.0f} ft | Afstand: {s.sky_pos.slant_range_km:.1f} km".replace(
-            ",", "."
-        )
+        plane_info = f"Altitude: {ac.altitude_ft:,.0f} ft | Distance: {s.sky_pos.slant_range_km:.1f} km"
 
         if event.event_type == "INCOMING" and s.time_to_closest_s is not None:
             eta_local = (event.timestamp_utc + timedelta(seconds=s.time_to_closest_s)).astimezone()
             min_sep = s.min_predicted_sep_deg if s.min_predicted_sep_deg is not None else s.angular_sep_deg
             pred_radii = min_sep / m.angular_radius_deg if m.angular_radius_deg > 0 else 0.0
             crosses_disk = min_sep <= m.angular_radius_deg
-            cross_txt = "Kruist maanschijf" if crosses_disk else "Langs de maanrand"
+            cross_txt = "Crossing lunar disk" if crosses_disk else "Skimming lunar limb"
             dur_txt = (
                 f" (~{s.predicted_transit_duration_s:.1f}s)"
                 if s.predicted_transit_duration_s
                 else ""
             )
-            title = f"Maanovergang over {s.time_to_closest_s:.0f}s: {ac.flight}"
+            title = f"Lunar transit in {s.time_to_closest_s:.0f}s: {ac.flight}"
             message = (
-                f"{ac.flight}{type_suffix} nadert de maan!\n"
-                f"Verwacht: {eta_local.strftime('%H:%M:%S')} ({cross_txt}{dur_txt})\n"
-                f"Min. scheiding: {min_sep:.2f}° ({pred_radii:.2f}R)\n"
+                f"{ac.flight}{type_suffix} is approaching the Moon!\n"
+                f"Expected: {eta_local.strftime('%H:%M:%S')} ({cross_txt}{dur_txt})\n"
+                f"Min. separation: {min_sep:.2f}° ({pred_radii:.2f}R)\n"
                 f"{plane_info}\n"
                 f"{moon_info}"
             )
             return title, message
 
         if event.event_type == "TRANSIT":
-            title = f"NU voor de maan: {ac.flight}"
+            title = f"Crossing Moon NOW: {ac.flight}"
             message = (
-                f"{ac.flight}{type_suffix} vliegt nu voor de maan langs!\n"
-                f"Scheiding: {s.angular_sep_deg:.3f}° ({s.moon_radii:.2f}R)\n"
+                f"{ac.flight}{type_suffix} is crossing in front of the Moon now!\n"
+                f"Separation: {s.angular_sep_deg:.3f}° ({s.moon_radii:.2f}R)\n"
                 f"{plane_info}\n"
                 f"{moon_info}"
             )
             return title, message
 
-        title = f"Vlakbij de maan: {ac.flight}"
+        title = f"Near Moon: {ac.flight}"
         message = (
-            f"{ac.flight}{type_suffix} passeert vlak langs de maan.\n"
-            f"Scheiding: {s.angular_sep_deg:.2f}° ({s.moon_radii:.2f}R)\n"
+            f"{ac.flight}{type_suffix} is passing close to the Moon.\n"
+            f"Separation: {s.angular_sep_deg:.2f}° ({s.moon_radii:.2f}R)\n"
             f"{plane_info}\n"
             f"{moon_info}"
         )
@@ -203,7 +201,7 @@ class TransitNotifier:
         url_title: str | None = None,
         raise_on_error: bool = False,
     ) -> bool:
-        """Verstuur een notificatie via de Pushover Messages API."""
+        """Send a notification via the Pushover Messages API."""
         if not self.pushover_enabled:
             return False
 
@@ -228,7 +226,7 @@ class TransitNotifier:
             resp.raise_for_status()
             body = resp.json()
             if body.get("status") != 1:
-                raise RuntimeError(f"Pushover API fout: {body}")
+                raise RuntimeError(f"Pushover API error: {body}")
             return True
         except Exception:
             if raise_on_error:
@@ -244,7 +242,7 @@ class TransitNotifier:
             pass
 
     def notify(self, event: TransitEvent) -> dict[str, object]:
-        """Log event en verstuur geconfigureerde meldingen."""
+        """Log event and dispatch all configured notifications."""
         payload = self._build_payload(event)
         self._write_jsonl(payload)
         self._send_macos_notification(event)
@@ -255,7 +253,7 @@ class TransitNotifier:
                 title,
                 message,
                 url=tar_url,
-                url_title="Bekijk op radar (tar1090)" if tar_url else None,
+                url_title="View on radar (tar1090)" if tar_url else None,
                 raise_on_error=False,
             )
         self._send_webhook(payload)

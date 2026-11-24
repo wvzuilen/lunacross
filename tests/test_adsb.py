@@ -1,4 +1,4 @@
-"""Unit tests voor ADS-B JSON-parsing."""
+"""Unit tests for ADS-B JSON parsing."""
 
 from __future__ import annotations
 

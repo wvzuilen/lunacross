@@ -1,4 +1,4 @@
-"""CLI en live Rich-dashboard voor LunaCross."""
+"""CLI and live Rich dashboard for LunaCross."""
 
 from __future__ import annotations
 
@@ -29,19 +29,19 @@ console = Console()
 
 def _format_local(dt_utc: datetime | None) -> str:
     if dt_utc is None:
-        return "Niet binnen 36u"
+        return "Not within 36h"
     local_dt = dt_utc.astimezone()
-    return local_dt.strftime("%d-%m %H:%M:%S (%Z)")
+    return local_dt.strftime("%Y-%m-%d %H:%M:%S (%Z)")
 
 
 def _status_badge(status: SightingStatus) -> Text:
     if status == "TRANSIT":
         return Text("TRANSIT!", style="bold white on red")
     if status == "NEAR_MISS":
-        return Text("VLAKBIJ", style="bold black on yellow")
+        return Text("NEAR MISS", style="bold black on yellow")
     if status == "INCOMING":
-        return Text("NADERT", style="bold black on cyan")
-    return Text("Volgen", style="dim")
+        return Text("INCOMING", style="bold black on cyan")
+    return Text("Tracking", style="dim")
 
 
 def _build_moon_panel(
@@ -51,9 +51,9 @@ def _build_moon_panel(
 ) -> Panel:
     local_time = moon.timestamp_utc.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     horizon_txt = (
-        "[bold green]Boven de horizon[/]"
+        "[bold green]Above horizon[/]"
         if moon.is_above_horizon
-        else "[bold red]Onder de horizon[/]"
+        else "[bold red]Below horizon[/]"
     )
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold cyan")
@@ -62,39 +62,39 @@ def _build_moon_panel(
     table.add_column()
 
     table.add_row(
-        "Locatie:",
+        "Location:",
         f"{cfg.latitude:.6f}° N, {cfg.longitude:.6f}° E ({cfg.elevation_m:.0f} m)",
-        "Tijd:",
+        "Time:",
         f"{local_time}",
     )
     table.add_row(
-        "Hoogte (Alt):",
+        "Altitude (Alt):",
         f"{moon.altitude_deg:+.2f}°",
-        "Azimut (Az):",
+        "Azimuth (Az):",
         f"{moon.azimuth_deg:.2f}° ({compass_direction(moon.azimuth_deg)})",
     )
     table.add_row(
-        "Hoekdiameter:",
+        "Angular size:",
         f"{moon.angular_diameter_deg:.3f}° ({moon.angular_diameter_deg * 60:.1f}')",
-        "Afstand:",
-        f"{moon.distance_km:,.0f} km".replace(",", "."),
+        "Distance:",
+        f"{moon.distance_km:,.0f} km",
     )
     table.add_row(
-        "Fase:",
-        f"{moon.phase_name} ({moon.illumination_pct:.1f}% verlicht)",
-        "Zichtbaarheid:",
+        "Phase:",
+        f"{moon.phase_name} ({moon.illumination_pct:.1f}% lit)",
+        "Visibility:",
         horizon_txt,
     )
     table.add_row(
-        "Volgende opkomst:",
+        "Next moonrise:",
         _format_local(rise_set.next_rise_utc),
-        "Volgende ondergang:",
+        "Next moonset:",
         _format_local(rise_set.next_set_utc),
     )
 
     return Panel(
         table,
-        title="[bold yellow]Maanpositie (Topocentrisch)[/]",
+        title="[bold yellow]Moon Position (Topocentric)[/]",
         border_style="yellow",
     )
 
@@ -106,33 +106,33 @@ def _build_aircraft_table(
     feed_status: str,
 ) -> Table:
     table = Table(
-        title=f"Dichtstbijzijnde vliegtuigen t.o.v. de maan  |  {feed_status}  |  In de lucht: {len(sightings)} (totaal feed: {total_raw})",
+        title=f"Closest Aircraft to the Moon  |  {feed_status}  |  Airborne: {len(sightings)} (feed total: {total_raw})",
         box=box.ROUNDED,
         expand=True,
     )
-    table.add_column("Vlucht", style="bold")
+    table.add_column("Flight", style="bold")
     table.add_column("Type/Cat", justify="center")
-    table.add_column("Hoogte", justify="right")
-    table.add_column("Afstand", justify="right")
-    table.add_column("Hemel (Az / Alt)", justify="right")
-    table.add_column("Δ Maan", justify="right")
-    table.add_column("Voorspelling", justify="right")
+    table.add_column("Altitude", justify="right")
+    table.add_column("Range", justify="right")
+    table.add_column("Sky (Az / Alt)", justify="right")
+    table.add_column("Δ Moon", justify="right")
+    table.add_column("Prediction", justify="right")
     table.add_column("Status", justify="center")
 
     shown = sightings[:top_n]
     if not shown:
-        table.add_row("-", "-", "-", "-", "-", "-", "-", Text("Geen vliegtuigen", style="dim"))
+        table.add_row("-", "-", "-", "-", "-", "-", "-", Text("No aircraft", style="dim"))
         return table
 
     for s in shown:
         ac = s.aircraft
         type_str = ac.aircraft_type or ac.category or "-"
-        alt_str = f"{ac.altitude_ft:,.0f} ft".replace(",", ".")
+        alt_str = f"{ac.altitude_ft:,.0f} ft"
         dist_str = f"{s.sky_pos.slant_range_km:.1f} km"
         sky_str = f"{s.sky_pos.azimuth_deg:5.1f}° / {s.sky_pos.altitude_deg:+5.1f}°"
         sep_str = f"{s.angular_sep_deg:.2f}° ({s.moon_radii:.1f}R)"
         if s.min_predicted_sep_deg is not None and s.time_to_closest_s is not None:
-            pred_str = f"{s.min_predicted_sep_deg:.2f}° over {s.time_to_closest_s:.0f}s"
+            pred_str = f"{s.min_predicted_sep_deg:.2f}° in {s.time_to_closest_s:.0f}s"
             if s.predicted_transit_duration_s:
                 pred_str += f" (~{s.predicted_transit_duration_s:.1f}s)"
         else:
@@ -159,35 +159,35 @@ def _build_alerts_panel(
 ) -> Panel:
     if moon.altitude_deg < min_moon_alt_deg:
         content = Text(
-            f"Maan staat onder de ingestelde drempelwaarde ({moon.altitude_deg:.1f}° < {min_moon_alt_deg:.1f}°). "
-            "Vliegtuigen worden wel gevolgd; transit-waarschuwingen starten zodra de maan boven de horizon staat.",
+            f"Moon is below the configured threshold ({moon.altitude_deg:.1f}° < {min_moon_alt_deg:.1f}°). "
+            "Aircraft are still tracked; transit alerts will activate once the Moon rises above the horizon.",
             style="yellow",
         )
-        return Panel(content, title="Transit-status", border_style="yellow")
+        return Panel(content, title="Transit Status", border_style="yellow")
 
     lines: list[str] = []
     for s in active:
         ac = s.aircraft
         if s.status == "TRANSIT":
             lines.append(
-                f"[bold red]NU VOOR DE MAAN:[/] {ac.flight} ({ac.hex}) | "
-                f"scheiding {s.angular_sep_deg:.3f}° ({s.moon_radii:.2f}R) | {ac.altitude_ft:.0f} ft"
+                f"[bold red]CROSSING MOON NOW:[/] {ac.flight} ({ac.hex}) | "
+                f"separation {s.angular_sep_deg:.3f}° ({s.moon_radii:.2f}R) | {ac.altitude_ft:,.0f} ft"
             )
         elif s.status == "NEAR_MISS":
             lines.append(
-                f"[bold yellow]VLAKBIJ DE MAAN:[/] {ac.flight} ({ac.hex}) | "
-                f"scheiding {s.angular_sep_deg:.2f}° | {ac.altitude_ft:.0f} ft"
+                f"[bold yellow]NEAR MOON:[/] {ac.flight} ({ac.hex}) | "
+                f"separation {s.angular_sep_deg:.2f}° | {ac.altitude_ft:,.0f} ft"
             )
         elif s.status == "INCOMING" and s.time_to_closest_s is not None:
             lines.append(
-                f"[bold cyan]NADERT MAAN:[/] {ac.flight} ({ac.hex}) | "
-                f"min. scheiding {s.min_predicted_sep_deg:.2f}° over {s.time_to_closest_s:.0f}s"
+                f"[bold cyan]INCOMING TRANSIT:[/] {ac.flight} ({ac.hex}) | "
+                f"min. separation {s.min_predicted_sep_deg:.2f}° in {s.time_to_closest_s:.0f}s"
             )
 
     if recent_events:
         if lines:
             lines.append("")
-        lines.append("[bold]Recente meldingen:[/]")
+        lines.append("[bold]Recent alerts:[/]")
         for ev in recent_events[-5:]:
             ts = ev.timestamp_utc.astimezone().strftime("%H:%M:%S")
             lines.append(
@@ -195,10 +195,10 @@ def _build_alerts_panel(
             )
 
     if not lines:
-        lines.append("[dim]Geen actieve of naderende maanovergangen binnen de horizon.[/]")
+        lines.append("[dim]No active or incoming lunar transits within the prediction horizon.[/]")
 
     border = "red" if any(s.status == "TRANSIT" for s in active) else "cyan"
-    return Panel("\n".join(lines), title="Maanovergang Alerts", border_style=border)
+    return Panel("\n".join(lines), title="Lunar Transit Alerts", border_style=border)
 
 
 def _sync_receiver_if_requested(cfg: Config, sync_receiver: bool) -> Config:
@@ -210,13 +210,13 @@ def _sync_receiver_if_requested(cfg: Config, sync_receiver: bool) -> Config:
         if coords is not None:
             cfg.latitude, cfg.longitude = coords
             console.print(
-                f"[green]Ontvangerlocatie gesynchroniseerd vanaf server: "
+                f"[green]Synced receiver location from server: "
                 f"{cfg.latitude:.6f}, {cfg.longitude:.6f}[/]"
             )
         else:
-            console.print("[yellow]Waarschuwing: receiver.json bevatte geen lat/lon.[/]")
+            console.print("[yellow]Warning: receiver.json did not contain lat/lon.[/]")
     except httpx.HTTPError as exc:
-        console.print(f"[yellow]Kon receiver.json niet ophalen ({exc}); gebruik config-locatie.[/]")
+        console.print(f"[yellow]Could not fetch receiver.json ({exc}); using configured location.[/]")
     return cfg
 
 
@@ -249,7 +249,7 @@ def _cmd_check(cfg: Config) -> int:
             snapshot = client.fetch_snapshot(max_seen_pos_s=cfg.max_seen_pos_s)
     except httpx.HTTPError as exc:
         console.print(_build_moon_panel(moon, rise_set, cfg))
-        console.print(f"[bold red]Fout bij ophalen ADS-B data ({cfg.adsb_url}):[/] {exc}")
+        console.print(f"[bold red]Failed to fetch ADS-B data ({cfg.adsb_url}):[/] {exc}")
         return 1
 
     sightings, _ = detector.evaluate(moon, snapshot.aircraft, now_utc=now)
@@ -262,7 +262,7 @@ def _cmd_check(cfg: Config) -> int:
             sightings,
             cfg.top_n,
             snapshot.total_raw,
-            f"[green]Verbonden[/] ({cfg.adsb_url})",
+            f"[green]Connected[/] ({cfg.adsb_url})",
         )
     )
     return 0
@@ -317,13 +317,13 @@ def _cmd_monitor(cfg: Config) -> int:
                 recent_events.append(ev)
             if len(recent_events) > 20:
                 del recent_events[:-20]
-            feed_status = "[bold green]Live verbonden[/]"
+            feed_status = "[bold green]Live connected[/]"
             total_raw = snapshot.total_raw
         except httpx.HTTPError as exc:
             sightings = []
             events = []
             total_raw = 0
-            feed_status = f"[bold red]Verbindingsfout: {exc}[/]"
+            feed_status = f"[bold red]Connection error: {exc}[/]"
 
         return moon, cached_rise_set, sightings, events, total_raw, feed_status
 
@@ -372,11 +372,11 @@ def _cmd_monitor(cfg: Config) -> int:
                             closest = (
                                 f"{sightings[0].aircraft.flight} ({sightings[0].angular_sep_deg:.2f}° / {sightings[0].moon_radii:.1f}R)"
                                 if sightings
-                                else "geen"
+                                else "none"
                             )
                             console.print(
-                                f"[{ts}] Maan Alt={moon.altitude_deg:+.2f}° Az={moon.azimuth_deg:.2f}° "
-                                f"| vliegtuigen={len(sightings)}/{total_raw} | dichtstbij={closest}"
+                                f"[{ts}] Moon Alt={moon.altitude_deg:+.2f}° Az={moon.azimuth_deg:.2f}° "
+                                f"| aircraft={len(sightings)}/{total_raw} | closest={closest}"
                             )
                             last_heartbeat_at = moon.timestamp_utc
                         sys.stdout.flush()
@@ -384,17 +384,17 @@ def _cmd_monitor(cfg: Config) -> int:
             except KeyboardInterrupt:
                 pass
 
-    console.print("\n[dim]Monitoring gestopt.[/]")
+    console.print("\n[dim]Monitoring stopped.[/]")
     return 0
 
 
 def _cmd_test_pushover(cfg: Config) -> int:
     if not (cfg.pushover_app_token and cfg.pushover_user_key):
         console.print(
-            "[bold yellow]Pushover is nog niet geconfigureerd.[/]\n"
-            "Vul [cyan]pushover_app_token[/] en [cyan]pushover_user_key[/] in via:\n"
-            "  1. [bold]config.toml[/] (kopieer [cyan]config.example.toml[/] naar [cyan]config.toml[/]), of\n"
-            "  2. Omgevingsvariabelen [cyan]LUNACROSS_PUSHOVER_APP_TOKEN[/] en "
+            "[bold yellow]Pushover is not configured yet.[/]\n"
+            "Set [cyan]pushover_app_token[/] and [cyan]pushover_user_key[/] via:\n"
+            "  1. [bold]config.toml[/] (copy [cyan]config.example.toml[/] to [cyan]config.toml[/]), or\n"
+            "  2. Environment variables [cyan]LUNACROSS_PUSHOVER_APP_TOKEN[/] and "
             "[cyan]LUNACROSS_PUSHOVER_USER_KEY[/]."
         )
         return 1
@@ -414,21 +414,21 @@ def _cmd_test_pushover(cfg: Config) -> int:
     )
     try:
         notifier.send_pushover(
-            title="LunaCross testmelding",
+            title="LunaCross test notification",
             message=(
-                f"Pushover werkt! Actuele maan: alt {moon.altitude_deg:+.1f}°, "
+                f"Pushover is working! Current Moon: alt {moon.altitude_deg:+.1f}°, "
                 f"az {moon.azimuth_deg:.1f}° ({compass_direction(moon.azimuth_deg)}), "
-                f"{moon.illumination_pct:.1f}% verlicht."
+                f"{moon.illumination_pct:.1f}% lit."
             ),
             url=cfg.adsb_url.replace("/data/aircraft.json", "/"),
             url_title="Open tar1090 radar",
             raise_on_error=True,
         )
     except Exception as exc:
-        console.print(f"[bold red]Fout bij versturen van Pushover-melding:[/] {exc}")
+        console.print(f"[bold red]Failed to send Pushover notification:[/] {exc}")
         return 1
 
-    console.print("[bold green]Testmelding succesvol verstuurd via Pushover![/]")
+    console.print("[bold green]Test notification sent successfully via Pushover![/]")
     return 0
 
 
@@ -440,8 +440,8 @@ def _cmd_simulate(cfg: Config, write_log: bool = False, send_pushover: bool = Fa
     using_synthetic_moon = not moon.is_above_horizon or moon.altitude_deg < 10.0
     if using_synthetic_moon:
         console.print(
-            f"[yellow]Let op: de echte maan staat momenteel op {moon.altitude_deg:+.1f}° "
-            "hoogte. Voor de simulatie gebruiken we tijdelijk een testmaan op +35.0° hoogte, 180.0° azimut.[/]"
+            f"[yellow]Note: the real Moon is currently at {moon.altitude_deg:+.1f}° "
+            "altitude. Using a temporary synthetic Moon at +35.0° altitude, 180.0° azimuth for this simulation.[/]"
         )
         moon = MoonPosition(
             timestamp_utc=now,
@@ -456,25 +456,25 @@ def _cmd_simulate(cfg: Config, write_log: bool = False, send_pushover: bool = Fa
             is_above_horizon=True,
         )
 
-    # Plaats een synthetisch vliegtuig op 35.000 ft precies op de kijklijn naar de maan
+    # Place a synthetic aircraft at 35,000 ft directly on the line of sight to the Moon
     import math
 
     alt_ft = 35000.0
     alt_m = alt_ft * 0.3048
     alt_rad = math.radians(moon.altitude_deg)
     ground_dist_m = (alt_m - cfg.elevation_m) / math.tan(alt_rad)
-    # Grondpunt vanaf waarnemer richting maanazimut:
+    # Ground point from observer along the Moon's azimuth:
     cross_lat, cross_lon, _ = extrapolate_position(
         cfg.latitude,
         cfg.longitude,
         alt_m,
-        ground_speed_kt=ground_dist_m / KNOTS_TO_MPS,  # 1s stap over exact ground_dist_m
+        ground_speed_kt=ground_dist_m / KNOTS_TO_MPS,
         track_deg=moon.azimuth_deg,
         vertical_rate_fpm=0.0,
         dt_s=1.0,
     )
 
-    # Laat het vliegtuig loodrecht op de kijklijn vliegen, beginnend 40s vóór het kruispunt
+    # Fly perpendicular to the line of sight, starting 40s before the crossing point
     track_deg = (moon.azimuth_deg + 90.0) % 360.0
     reverse_track = (track_deg + 180.0) % 360.0
     gs_kt = 450.0
@@ -514,18 +514,18 @@ def _cmd_simulate(cfg: Config, write_log: bool = False, send_pushover: bool = Fa
     )
     if send_pushover and (not cfg.pushover_app_token or not cfg.pushover_user_key):
         console.print(
-            "[yellow]Waarschuwing: --pushover opgegeven, maar pushover_app_token / "
-            "pushover_user_key ontbreken in config.[/]"
+            "[yellow]Warning: --pushover specified, but pushover_app_token / "
+            "pushover_user_key are missing in config.[/]"
         )
 
     table = Table(
-        title="Simulatie maanovergang (virtueel vliegtuig KLM999 op 35.000 ft, 450 kt)",
+        title="Lunar Transit Simulation (virtual aircraft KLM999 at 35,000 ft, 450 kt)",
         box=box.ROUNDED,
     )
     table.add_column("T (s)", justify="right")
-    table.add_column("Scheiding", justify="right")
-    table.add_column("Maanstralen", justify="right")
-    table.add_column("Voorspelling", justify="right")
+    table.add_column("Separation", justify="right")
+    table.add_column("Moon Radii", justify="right")
+    table.add_column("Prediction", justify="right")
     table.add_column("Status", justify="center")
     table.add_column("Event", justify="center")
 
@@ -564,7 +564,7 @@ def _cmd_simulate(cfg: Config, write_log: bool = False, send_pushover: bool = Fa
             for ev in events:
                 notifier.notify(ev)
         pred = (
-            f"{s.min_predicted_sep_deg:.3f}° over {s.time_to_closest_s:.1f}s"
+            f"{s.min_predicted_sep_deg:.3f}° in {s.time_to_closest_s:.1f}s"
             if s.min_predicted_sep_deg is not None and s.time_to_closest_s is not None
             else "-"
         )
@@ -585,32 +585,32 @@ def _cmd_simulate(cfg: Config, write_log: bool = False, send_pushover: bool = Fa
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lunacross",
-        description="Bepaal de exacte maanpositie en monitor ADS-B vliegtuigen op maanovergangen.",
+        description="Compute exact topocentric Moon position and monitor ADS-B aircraft for lunar transits.",
     )
-    parser.add_argument("--config", type=Path, default=None, help="Pad naar config.toml")
-    parser.add_argument("--lat", type=float, default=None, help="Breedtegraad (graden N)")
-    parser.add_argument("--lon", type=float, default=None, help="Lengtegraad (graden E)")
-    parser.add_argument("--elevation", type=float, default=None, help="Hoogte in meters")
-    parser.add_argument("--url", type=str, default=None, help="URL naar aircraft.json")
-    parser.add_argument("--margin", type=float, default=None, help="Alert-marge rond maan (graden)")
-    parser.add_argument("--horizon", type=float, default=None, help="Voorspellingshorizon (sec)")
+    parser.add_argument("--config", type=Path, default=None, help="Path to config.toml")
+    parser.add_argument("--lat", type=float, default=None, help="Observer latitude (degrees N)")
+    parser.add_argument("--lon", type=float, default=None, help="Observer longitude (degrees E)")
+    parser.add_argument("--elevation", type=float, default=None, help="Observer elevation in meters")
+    parser.add_argument("--url", type=str, default=None, help="URL to aircraft.json")
+    parser.add_argument("--margin", type=float, default=None, help="Alert margin around Moon (degrees)")
+    parser.add_argument("--horizon", type=float, default=None, help="Prediction horizon (seconds)")
     parser.add_argument(
         "--sync-receiver",
         action="store_true",
-        help="Haal lat/lon op uit receiver.json van de ADS-B server",
+        help="Fetch lat/lon from the ADS-B server's receiver.json",
     )
 
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("moon", help="Toon de actuele maanpositie voor jouw locatie")
-    sub.add_parser("check", help="Eenmalige check van maanpositie en live vliegtuigen")
-    sub.add_parser("monitor", help="Live dashboard dat continu op maanovergangen monitort")
-    sub.add_parser("test-pushover", help="Stuur een testnotificatie via Pushover")
-    sim_parser = sub.add_parser("simulate", help="Simuleer een vliegtuigtransit voor de maan")
-    sim_parser.add_argument("--log", action="store_true", help="Schrijf simulatie-events naar logbestand")
+    sub.add_parser("moon", help="Show the current Moon position for your location")
+    sub.add_parser("check", help="One-shot check of Moon position and live aircraft")
+    sub.add_parser("monitor", help="Live dashboard monitoring continuously for lunar transits")
+    sub.add_parser("test-pushover", help="Send a test notification via Pushover")
+    sim_parser = sub.add_parser("simulate", help="Simulate an aircraft crossing in front of the Moon")
+    sim_parser.add_argument("--log", action="store_true", help="Write simulated events to the log file")
     sim_parser.add_argument(
         "--pushover",
         action="store_true",
-        help="Verstuur de gesimuleerde transitmeldingen ook via Pushover",
+        help="Also send simulated transit alerts via Pushover",
     )
     return parser
 

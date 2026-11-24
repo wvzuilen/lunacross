@@ -1,4 +1,4 @@
-"""3D WGS-84 geometrie, refractie en baanextrapolatie voor vliegtuigen."""
+"""3D WGS-84 geometry, atmospheric refraction, and flight trajectory extrapolation."""
 
 from __future__ import annotations
 
@@ -17,22 +17,22 @@ FPM_TO_MPS = 0.00508
 EARTH_MEAN_RADIUS_M = 6371008.8
 ATMOSPHERE_SCALE_HEIGHT_M = 8500.0
 
-# Geschatte karakteristieke vliegtuigafmeting (spanwijdte/romp) per ADS-B categorie
+# Estimated characteristic aircraft size (wingspan/length) per ADS-B emitter category
 _CATEGORY_SIZE_M: dict[str, float] = {
-    "A1": 12.0,   # Licht (< 15.500 lbs)
-    "A2": 25.0,   # Klein (15.500 - 75.000 lbs)
-    "A3": 38.0,   # Groot (75.000 - 300.000 lbs, bijv. A320 / 737)
-    "A4": 45.0,   # High-vortex groot (bijv. B757)
-    "A5": 65.0,   # Zwaar (> 300.000 lbs, bijv. B777 / A350 / A380)
+    "A1": 12.0,   # Light (< 15,500 lbs)
+    "A2": 25.0,   # Small (15,500 - 75,000 lbs)
+    "A3": 38.0,   # Large (75,000 - 300,000 lbs, e.g. A320 / 737)
+    "A4": 45.0,   # High-vortex large (e.g. B757)
+    "A5": 65.0,   # Heavy (> 300,000 lbs, e.g. B777 / A350 / A380)
     "A6": 20.0,   # High performance
-    "A7": 15.0,   # Helikopter
+    "A7": 15.0,   # Rotorcraft
 }
 _DEFAULT_AIRCRAFT_SIZE_M = 35.0
 
 
 @dataclass(frozen=True, slots=True)
 class SkyPosition:
-    """Positie van een vliegtuig aan de hemel vanuit het standpunt van de waarnemer."""
+    """Apparent sky coordinates of an aircraft from the observer's point of view."""
 
     altitude_deg: float
     azimuth_deg: float
@@ -41,7 +41,7 @@ class SkyPosition:
 
 
 def geodetic_to_ecef(lat_deg: float, lon_deg: float, alt_m: float) -> tuple[float, float, float]:
-    """Zet WGS-84 geodetische coördinaten om naar ECEF (x, y, z) in meters."""
+    """Convert WGS-84 geodetic coordinates to ECEF (x, y, z) in meters."""
     lat = math.radians(lat_deg)
     lon = math.radians(lon_deg)
     sin_lat = math.sin(lat)
@@ -63,7 +63,7 @@ def ecef_to_enu(
     obs_lat_deg: float,
     obs_lon_deg: float,
 ) -> tuple[float, float, float]:
-    """Zet een ECEF-verschilvector om naar lokaal East-North-Up (ENU) in meters."""
+    """Convert an ECEF difference vector to local East-North-Up (ENU) in meters."""
     lat = math.radians(obs_lat_deg)
     lon = math.radians(obs_lon_deg)
     sin_lat = math.sin(lat)
@@ -96,7 +96,7 @@ def aircraft_altaz(
     ac_alt_m: float,
     apply_refraction: bool = True,
 ) -> SkyPosition:
-    """Bereken schijnbare hoogte, azimut, schuine afstand en grondafstand tot een vliegtuig."""
+    """Compute apparent altitude, azimuth, slant range, and ground distance to an aircraft."""
     ox, oy, oz = geodetic_to_ecef(obs_lat, obs_lon, obs_alt_m)
     ax, ay, az = geodetic_to_ecef(ac_lat, ac_lon, ac_alt_m)
     east, north, up = ecef_to_enu(ax - ox, ay - oy, az - oz, obs_lat, obs_lon)
@@ -108,7 +108,7 @@ def aircraft_altaz(
 
     apparent_alt_deg = geom_alt_deg
     if apply_refraction and geom_alt_deg > -1.0:
-        # Schaal atmosferische refractie met de hoogte van het vliegtuig boven de waarnemer
+        # Scale atmospheric refraction by aircraft height above the observer
         delta_alt = max(0.0, ac_alt_m - obs_alt_m)
         scale = 1.0 - math.exp(-delta_alt / ATMOSPHERE_SCALE_HEIGHT_M)
         apparent_alt_deg += float(refraction(geom_alt_deg, temperature_C=10.0, pressure_mbar=1010.0)) * scale
@@ -127,7 +127,7 @@ def angular_separation_deg(
     alt2_deg: float,
     az2_deg: float,
 ) -> float:
-    """Numeriek stabiele hoekafstand (Vincenty-formule) tussen twee punten aan de hemel."""
+    """Numerically stable great-circle angular separation (Vincenty formula) in degrees."""
     phi1 = math.radians(alt1_deg)
     phi2 = math.radians(alt2_deg)
     d_lam = math.radians(az2_deg - az1_deg)
@@ -156,7 +156,7 @@ def extrapolate_position(
     vertical_rate_fpm: float,
     dt_s: float,
 ) -> tuple[float, float, float]:
-    """Extrapoleer vliegtuigpositie (lat, lon, alt_m) over dt_s seconden langs grootcirkel."""
+    """Project aircraft position (lat, lon, alt_m) forward by dt_s seconds along a great circle."""
     new_alt_m = max(0.0, alt_m + vertical_rate_fpm * FPM_TO_MPS * dt_s)
     dist_m = ground_speed_kt * KNOTS_TO_MPS * dt_s
     if abs(dist_m) < 1e-6:
@@ -183,7 +183,7 @@ def extrapolate_position(
 
 
 def estimate_aircraft_angular_size_deg(slant_range_km: float, category: str | None) -> float:
-    """Schat de schijnbare hoekgrootte van het vliegtuig aan de hemel in graden."""
+    """Estimate the apparent angular span of an aircraft in the sky in degrees."""
     if slant_range_km <= 0.0:
         return 0.0
     size_m = _CATEGORY_SIZE_M.get((category or "").strip().upper(), _DEFAULT_AIRCRAFT_SIZE_M)

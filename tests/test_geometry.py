@@ -1,4 +1,4 @@
-"""Unit tests voor 3D WGS-84 geometrie, refractie en baanextrapolatie."""
+"""Unit tests for 3D WGS-84 geometry, refraction, and trajectory extrapolation."""
 
 from __future__ import annotations
 
@@ -44,12 +44,12 @@ def test_angular_separation_precision_and_wraparound() -> None:
     assert angular_separation_deg(0.0, 0.0, 90.0, 0.0) == pytest.approx(90.0, abs=1e-6)
     assert angular_separation_deg(0.0, 0.0, 0.0, 90.0) == pytest.approx(90.0, abs=1e-6)
 
-    # Wraparound rond 0° / 360°
+    # Wraparound across 0° / 360°
     wrap = angular_separation_deg(10.0, 359.5, 10.0, 0.5)
     expected = math.degrees(2.0 * math.asin(math.cos(math.radians(10.0)) * math.sin(math.radians(0.5))))
     assert wrap == pytest.approx(expected, abs=1e-6)
 
-    # Zeer kleine scheiding van 0.01° op 45° hoogte
+    # Tiny separation of 0.01° at 45° altitude
     tiny = angular_separation_deg(45.0, 180.0, 45.01, 180.0)
     assert tiny == pytest.approx(0.01, abs=1e-7)
 
@@ -84,5 +84,5 @@ def test_extrapolate_position_north_and_climb() -> None:
 
 def test_aircraft_angular_size() -> None:
     ang = estimate_aircraft_angular_size_deg(slant_range_km=20.0, category="A5")
-    # 65m op 20km ~ 0.186°
+    # 65m at 20km ~ 0.186°
     assert 0.15 < ang < 0.22

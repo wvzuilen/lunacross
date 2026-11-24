@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "lunacross"
 version = "0.1.0"
-description = "Bereken de exacte maanpositie vanaf je locatie en monitor ADS-B vliegtuigen op maanovergangen."
+description = "Compute exact topocentric Moon position and monitor local ADS-B aircraft for lunar transits."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
