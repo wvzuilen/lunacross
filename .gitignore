@@ -9,6 +9,7 @@ config.toml
 .env
 .env.*
 *.bsp
+data/
 .DS_Store
 dist/
 build/

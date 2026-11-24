@@ -69,6 +69,23 @@ Je kunt direct een Pushover-melding ontvangen zodra een vliegtuig op koers ligt 
    uv run lunacross simulate --pushover
    ```
 
+## Docker (24/7 op een server)
+
+1. Maak `config.toml` aan op basis van `config.example.toml` en zet de paden voor de container:
+   ```toml
+   log_file = "/data/transits.jsonl"
+   ephemeris_dir = "/data/skyfield"
+   notify_macos = false
+   ```
+2. Bouw en start de container (`restart: unless-stopped`):
+   ```bash
+   docker compose up -d --build
+   ```
+3. Bekijk de live logs:
+   ```bash
+   docker logs -f lunacross
+   ```
+
 ## Tests draaien
 
 ```bash

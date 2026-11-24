@@ -1,0 +1,14 @@
+.git/
+.venv/
+.cache/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+config.toml
+monitor.log
+transits.jsonl
+.env
+.env.*
+tests/
+.DS_Store
+data/
