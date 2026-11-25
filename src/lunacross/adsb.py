@@ -1,8 +1,9 @@
-"""HTTP client and parser for tar1090 / readsb ADS-B JSON data."""
+"""HTTP client and parser for tar1090 / readsb and community ADS-B JSON feeds."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -31,11 +32,12 @@ class Aircraft:
     seen_pos_s: float
     squawk: str | None
     rssi: float | None
+    source: str = "local"
 
 
 @dataclass(frozen=True, slots=True)
 class AdsbSnapshot:
-    """Snapshot of all usable airborne aircraft from a single ADS-B poll."""
+    """Snapshot of all usable airborne aircraft from an ADS-B poll."""
 
     timestamp_unix: float
     aircraft: list[Aircraft]
@@ -46,10 +48,22 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def parse_aircraft_payload(data: dict[str, Any], max_seen_pos_s: float = 30.0) -> AdsbSnapshot:
-    """Parse a tar1090/readsb aircraft.json dictionary into an AdsbSnapshot."""
-    raw_list = data.get("aircraft") or []
-    timestamp_unix = float(data.get("now") or 0.0)
+def parse_aircraft_payload(
+    data: dict[str, Any],
+    max_seen_pos_s: float = 30.0,
+    *,
+    source: str = "local",
+) -> AdsbSnapshot:
+    """Parse a tar1090/readsb aircraft.json or v2 community API dictionary into an AdsbSnapshot."""
+    raw_list = data.get("aircraft")
+    if raw_list is None:
+        raw_list = data.get("ac") or []
+
+    raw_now = data.get("now") or 0.0
+    timestamp_unix = float(raw_now)
+    if timestamp_unix > 1e12:
+        timestamp_unix /= 1000.0
+
     parsed: list[Aircraft] = []
 
     for item in raw_list:
@@ -113,6 +127,7 @@ def parse_aircraft_payload(data: dict[str, Any], max_seen_pos_s: float = 30.0) -
                 seen_pos_s=seen_pos_s,
                 squawk=item.get("squawk"),
                 rssi=float(rssi) if _is_number(rssi) else None,
+                source=source,
             )
         )
 
@@ -120,6 +135,73 @@ def parse_aircraft_payload(data: dict[str, Any], max_seen_pos_s: float = 30.0) -
         timestamp_unix=timestamp_unix,
         aircraft=parsed,
         total_raw=len(raw_list),
+    )
+
+
+def merge_snapshots(
+    primary: AdsbSnapshot | None,
+    supplement: AdsbSnapshot | None,
+    *,
+    supplement_age_s: float = 0.0,
+    max_seen_pos_s: float = 30.0,
+) -> AdsbSnapshot:
+    """Merge primary local ADS-B aircraft with an optional community supplement snapshot.
+
+    Primary aircraft keep their local real-time kinematics while inheriting missing
+    metadata (registration, type, category) from the supplement. Supplement-only
+    aircraft have their seen_pos_s aged by supplement_age_s for dead-reckoning.
+    """
+    if primary is None and supplement is None:
+        return AdsbSnapshot(timestamp_unix=0.0, aircraft=[], total_raw=0)
+
+    supp_by_hex: dict[str, Aircraft] = {}
+    if supplement is not None:
+        for ac in supplement.aircraft:
+            supp_by_hex[ac.hex] = ac
+
+    merged: list[Aircraft] = []
+    seen_hexes: set[str] = set()
+
+    if primary is not None:
+        for ac in primary.aircraft:
+            seen_hexes.add(ac.hex)
+            match = supp_by_hex.get(ac.hex)
+            if match is not None:
+                merged.append(
+                    replace(
+                        ac,
+                        registration=ac.registration or match.registration,
+                        aircraft_type=ac.aircraft_type or match.aircraft_type,
+                        category=ac.category or match.category,
+                    )
+                )
+            else:
+                merged.append(ac)
+
+    age_offset = max(0.0, supplement_age_s)
+    added_supplement = 0
+    if supplement is not None:
+        for ac in supplement.aircraft:
+            if ac.hex in seen_hexes:
+                continue
+            adjusted_seen = ac.seen_pos_s + age_offset
+            if adjusted_seen > max_seen_pos_s:
+                continue
+            seen_hexes.add(ac.hex)
+            added_supplement += 1
+            merged.append(replace(ac, seen_pos_s=adjusted_seen))
+
+    timestamp_unix = (
+        primary.timestamp_unix
+        if primary is not None
+        else (supplement.timestamp_unix if supplement is not None else 0.0)
+    )
+    primary_raw = primary.total_raw if primary is not None else 0
+    total_raw = max(len(merged), primary_raw + added_supplement)
+    return AdsbSnapshot(
+        timestamp_unix=timestamp_unix,
+        aircraft=merged,
+        total_raw=total_raw,
     )
 
 
@@ -133,13 +215,47 @@ def _derive_receiver_url(adsb_url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, new_path, "", ""))
 
 
-class AdsbClient:
-    """Synchronous HTTP client for tar1090/readsb JSON endpoints."""
+def _format_supplement_url(
+    template: str | None,
+    lat: float | None,
+    lon: float | None,
+    radius_nm: float,
+) -> str | None:
+    if not template or lat is None or lon is None:
+        return None
+    return template.format(
+        lat=f"{lat:.4f}",
+        lon=f"{lon:.4f}",
+        dist_nm=max(1, int(round(radius_nm))),
+    )
 
-    def __init__(self, adsb_url: str, timeout_s: float = 3.0) -> None:
+
+class AdsbClient:
+    """Synchronous HTTP client for local tar1090/readsb + optional community supplement feed."""
+
+    def __init__(
+        self,
+        adsb_url: str,
+        timeout_s: float = 3.0,
+        *,
+        supplement_url_template: str | None = None,
+        observer_lat: float | None = None,
+        observer_lon: float | None = None,
+        supplement_radius_nm: float = 45.0,
+        supplement_interval_s: float = 5.0,
+    ) -> None:
         self.adsb_url = adsb_url
         self.receiver_url = _derive_receiver_url(adsb_url)
-        self._client = httpx.Client(timeout=timeout_s)
+        self.supplement_url = _format_supplement_url(
+            supplement_url_template, observer_lat, observer_lon, supplement_radius_nm
+        )
+        self.supplement_interval_s = max(1.0, supplement_interval_s)
+        self._client = httpx.Client(
+            timeout=timeout_s,
+            headers={"User-Agent": "LunaCross/0.1 (+https://github.com/wvzuilen/lunacross)"},
+        )
+        self._cached_supplement: AdsbSnapshot | None = None
+        self._cached_supplement_at: float | None = None
 
     def __enter__(self) -> AdsbClient:
         return self
@@ -151,10 +267,60 @@ class AdsbClient:
         self._client.close()
 
     def fetch_snapshot(self, max_seen_pos_s: float = 30.0) -> AdsbSnapshot:
-        """Fetch live aircraft from /data/aircraft.json."""
-        resp = self._client.get(self.adsb_url)
-        resp.raise_for_status()
-        return parse_aircraft_payload(resp.json(), max_seen_pos_s=max_seen_pos_s)
+        """Fetch live aircraft from local /data/aircraft.json and merge optional supplement."""
+        primary: AdsbSnapshot | None = None
+        primary_err: Exception | None = None
+        try:
+            resp = self._client.get(self.adsb_url)
+            resp.raise_for_status()
+            primary = parse_aircraft_payload(resp.json(), max_seen_pos_s=max_seen_pos_s, source="local")
+        except httpx.HTTPError as exc:
+            primary_err = exc
+
+        if self.supplement_url is not None:
+            now_mono = time.monotonic()
+            should_refresh = (
+                self._cached_supplement is None
+                or self._cached_supplement_at is None
+                or (now_mono - self._cached_supplement_at) >= self.supplement_interval_s
+            )
+            if should_refresh:
+                try:
+                    s_resp = self._client.get(self.supplement_url)
+                    s_resp.raise_for_status()
+                    self._cached_supplement = parse_aircraft_payload(
+                        s_resp.json(),
+                        max_seen_pos_s=max_seen_pos_s,
+                        source="supplement",
+                    )
+                    self._cached_supplement_at = now_mono
+                except httpx.HTTPError:
+                    pass
+
+        if primary is None:
+            if self._cached_supplement is not None and self._cached_supplement_at is not None:
+                age_s = max(0.0, time.monotonic() - self._cached_supplement_at)
+                if age_s <= max_seen_pos_s:
+                    return merge_snapshots(
+                        None,
+                        self._cached_supplement,
+                        supplement_age_s=age_s,
+                        max_seen_pos_s=max_seen_pos_s,
+                    )
+            assert primary_err is not None
+            raise primary_err
+
+        age_s = (
+            max(0.0, time.monotonic() - self._cached_supplement_at)
+            if self._cached_supplement_at is not None
+            else 0.0
+        )
+        return merge_snapshots(
+            primary,
+            self._cached_supplement,
+            supplement_age_s=age_s,
+            max_seen_pos_s=max_seen_pos_s,
+        )
 
     def fetch_receiver_location(self) -> tuple[float, float] | None:
         """Fetch configured receiver coordinates from /data/receiver.json."""

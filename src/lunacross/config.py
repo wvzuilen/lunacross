@@ -17,6 +17,9 @@ class Config:
     longitude: float = 4.8926
     elevation_m: float = 2.0
     adsb_url: str = "http://localhost:8090/data/aircraft.json"
+    supplement_url: str | None = None
+    supplement_radius_nm: float = 45.0
+    supplement_interval_s: float = 5.0
     poll_interval_s: float = 1.0
     alert_margin_deg: float = 0.5
     log_margin_deg: float = 5.0

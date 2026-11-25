@@ -9,6 +9,12 @@ elevation_m = 2.0
 # URL to your ADS-B receiver's tar1090/readsb JSON feed
 adsb_url = "http://adsb.local:8090/data/aircraft.json"
 
+# Optional community ADS-B supplement feed (e.g. adsb.lol) to extend range and add aircraft type/reg metadata
+# Supports {lat}, {lon}, and {dist_nm} placeholders
+# supplement_url = "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist_nm}"
+supplement_radius_nm = 45.0
+supplement_interval_s = 5.0
+
 # Poll interval in seconds during live monitoring
 poll_interval_s = 1.0
 

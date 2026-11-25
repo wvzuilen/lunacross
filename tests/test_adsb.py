@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from lunacross.adsb import parse_aircraft_payload
+from lunacross.adsb import merge_snapshots, parse_aircraft_payload
 
 
 def test_parse_aircraft_payload_filters_and_prefers_geom() -> None:
@@ -74,3 +74,80 @@ def test_parse_aircraft_payload_filters_and_prefers_geom() -> None:
     assert second.flight == "ABCDEF"
     assert second.altitude_ft == 24000.0
     assert second.altitude_source == "baro"
+
+
+def test_parse_community_v2_payload_and_merge() -> None:
+    local_payload = {
+        "now": 1795556720.0,
+        "aircraft": [
+            {
+                "hex": "407567",
+                "flight": "EZY98ZW ",
+                "alt_geom": 35650,
+                "gs": 388.3,
+                "track": 274.73,
+                "lat": 51.827584,
+                "lon": 5.275955,
+                "seen_pos": 1.0,
+            }
+        ],
+    }
+    community_payload = {
+        "now": 1795556721000.0,
+        "ac": [
+            {
+                "hex": "407567",
+                "flight": "EZY98ZW ",
+                "r": "G-UZHH",
+                "t": "A20N",
+                "category": "A3",
+                "alt_geom": 35600,
+                "lat": 51.82,
+                "lon": 5.27,
+                "seen_pos": 2.0,
+            },
+            {
+                "hex": "486482",
+                "flight": "KLC52L  ",
+                "r": "PH-NXE",
+                "t": "E295",
+                "category": "A3",
+                "alt_geom": 5175,
+                "gs": 228.0,
+                "track": 57.36,
+                "lat": 52.133881,
+                "lon": 4.336548,
+                "seen_pos": 0.5,
+            },
+            {
+                "hex": "999999",
+                "flight": "STALE1",
+                "alt_geom": 10000,
+                "lat": 52.0,
+                "lon": 5.0,
+                "seen_pos": 28.0,
+            },
+        ],
+    }
+
+    primary = parse_aircraft_payload(local_payload, max_seen_pos_s=30.0, source="local")
+    supp = parse_aircraft_payload(community_payload, max_seen_pos_s=30.0, source="supplement")
+    assert supp.timestamp_unix == pytest.approx(1795556721.0)
+    assert len(supp.aircraft) == 3
+
+    merged = merge_snapshots(primary, supp, supplement_age_s=4.0, max_seen_pos_s=30.0)
+    # 407567 keeps local lat/lon/alt + gains r/t/category; 486482 added aged by 4s; 999999 dropped (28+4 > 30)
+    assert len(merged.aircraft) == 2
+    by_hex = {a.hex: a for a in merged.aircraft}
+
+    local_ac = by_hex["407567"]
+    assert local_ac.source == "local"
+    assert local_ac.lat == pytest.approx(51.827584)
+    assert local_ac.registration == "G-UZHH"
+    assert local_ac.aircraft_type == "A20N"
+    assert local_ac.category == "A3"
+
+    supp_ac = by_hex["486482"]
+    assert supp_ac.source == "supplement"
+    assert supp_ac.seen_pos_s == pytest.approx(4.5)
+    assert supp_ac.aircraft_type == "E295"

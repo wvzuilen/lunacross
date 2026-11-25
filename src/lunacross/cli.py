@@ -237,6 +237,17 @@ def _cmd_moon(cfg: Config) -> int:
     return 0
 
 
+def _make_adsb_client(cfg: Config) -> AdsbClient:
+    return AdsbClient(
+        cfg.adsb_url,
+        supplement_url_template=cfg.supplement_url,
+        observer_lat=cfg.latitude,
+        observer_lon=cfg.longitude,
+        supplement_radius_nm=cfg.supplement_radius_nm,
+        supplement_interval_s=cfg.supplement_interval_s,
+    )
+
+
 def _cmd_check(cfg: Config) -> int:
     tracker = MoonTracker(cfg.latitude, cfg.longitude, cfg.elevation_m, cfg.ephemeris_dir)
     now = datetime.now(timezone.utc)
@@ -253,7 +264,7 @@ def _cmd_check(cfg: Config) -> int:
     )
 
     try:
-        with AdsbClient(cfg.adsb_url) as client:
+        with _make_adsb_client(cfg) as client:
             snapshot = client.fetch_snapshot(max_seen_pos_s=cfg.max_seen_pos_s)
     except httpx.HTTPError as exc:
         console.print(_build_moon_panel(moon, rise_set, cfg))
@@ -380,7 +391,7 @@ def _cmd_monitor(cfg: Config) -> int:
         return moon, cached_rise_set, sightings, events, total_raw, feed_status
 
     try:
-        with AdsbClient(cfg.adsb_url) as client:
+        with _make_adsb_client(cfg) as client:
             if console.is_terminal:
                 with Live(console=console, refresh_per_second=2, screen=False) as live:
                     try:
@@ -519,7 +530,7 @@ def _cmd_render(
             log_margin_deg=cfg.log_margin_deg,
         )
         try:
-            with AdsbClient(cfg.adsb_url) as client:
+            with _make_adsb_client(cfg) as client:
                 snapshot = client.fetch_snapshot(max_seen_pos_s=cfg.max_seen_pos_s)
         except httpx.HTTPError as exc:
             console.print(f"[bold red]Failed to fetch ADS-B data ({cfg.adsb_url}):[/] {exc}")

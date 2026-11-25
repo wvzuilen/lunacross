@@ -5,7 +5,7 @@ A Python tool that computes the exact apparent position of the Moon from your lo
 ## Features
 
 - **High-precision lunar position (`skyfield` + JPL `de421.bsp`)**: topocentric altitude (including atmospheric refraction), azimuth + compass direction, distance in km, exact apparent angular diameter, illumination percentage, lunar phase, and next moonrise/moonset.
-- **Local ADS-B receiver integration**: reads live `/data/aircraft.json` from a local `tar1090`/`readsb` feed and can optionally sync coordinates from `/data/receiver.json` (`--sync-receiver`).
+- **Local ADS-B receiver integration**: reads live `/data/aircraft.json` from a local `tar1090`/`readsb` feed and can optionally sync coordinates from `/data/receiver.json` (`--sync-receiver`), plus an optional **Hybrid ADS-B mode** combining your local receiver with a free community radius API (`adsb.lol`) for extended coverage and aircraft type/registration enrichment.
 - **3D WGS-84 line-of-sight geometry**: transforms aircraft positions (`lat`, `lon`, `alt_geom` / `alt_baro`) via ECEF → local ENU into exact apparent viewing angles (azimuth & altitude) with altitude-scaled refraction and `seen_pos` dead-reckoning.
 - **Lookahead trajectory prediction & sub-second detection**: projects flight paths ahead along a great circle to warn of upcoming crossings (`INCOMING`) while interpolating between 1-second ADS-B polls so fast aircraft never slip across the lunar disk undetected.
 - **Complete close-pass track recording**: every aircraft entering `log_margin_deg` (default `5.0°`) is recorded with its full topocentric sky track (`passes.jsonl`) and true closest approach.
@@ -45,6 +45,15 @@ Settings are resolved in the following order (lowest to highest priority):
 2. `config.toml` (auto-loaded from the current working directory, or specified via `--config`),
 3. Environment variables (`LUNACROSS_LATITUDE`, `LUNACROSS_LONGITUDE`, `LUNACROSS_ADSB_URL`, `LUNACROSS_WEBHOOK_URL`, ...),
 4. CLI flags (`--lat`, `--lon`, `--elevation`, `--url`, `--margin`, `--horizon`, `--sync-receiver`).
+
+### Hybrid ADS-B Mode (Optional)
+If your indoor antenna only picks up nearby aircraft, you can combine your local `readsb`/`tar1090` feed with the free community `adsb.lol` radius API (`supplement_url`) to extend coverage and enrich local aircraft with registration and aircraft type metadata:
+
+```toml
+supplement_url = "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist_nm}"
+supplement_radius_nm = 45.0
+supplement_interval_s = 5.0
+```
 
 ## Usage
 

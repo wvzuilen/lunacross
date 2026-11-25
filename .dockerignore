@@ -5,7 +5,7 @@
 __pycache__/
 *.py[cod]
 config.toml
-monitor.log
+*.log
 transits.jsonl
 passes.jsonl
 .env
