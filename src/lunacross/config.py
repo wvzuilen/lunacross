@@ -19,10 +19,12 @@ class Config:
     adsb_url: str = "http://localhost:8090/data/aircraft.json"
     poll_interval_s: float = 1.0
     alert_margin_deg: float = 0.5
+    log_margin_deg: float = 5.0
     predict_horizon_s: float = 120.0
     min_moon_alt_deg: float = 0.0
     max_seen_pos_s: float = 30.0
     log_file: str = "transits.jsonl"
+    passes_file: str = "passes.jsonl"
     notify_macos: bool = True
     webhook_url: str | None = None
     pushover_app_token: str | None = None
@@ -31,8 +33,11 @@ class Config:
     pushover_sound: str | None = None
     pushover_priority: int = 1
     pushover_events: str = "INCOMING,TRANSIT"
+    pushover_max_lead_s: float = 60.0
+    pushover_margin_deg: float = 0.25
     ephemeris_dir: str = ".cache/skyfield"
     top_n: int = 12
+    web_port: int = 0
 
 
 def _parse_env_value(raw: str, current: Any) -> Any:

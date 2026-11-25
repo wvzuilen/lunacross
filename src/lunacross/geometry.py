@@ -188,3 +188,65 @@ def estimate_aircraft_angular_size_deg(slant_range_km: float, category: str | No
         return 0.0
     size_m = _CATEGORY_SIZE_M.get((category or "").strip().upper(), _DEFAULT_AIRCRAFT_SIZE_M)
     return math.degrees(2.0 * math.atan(size_m / (2.0 * slant_range_km * 1000.0)))
+
+
+def _altaz_to_unit(alt_deg: float, az_deg: float) -> tuple[float, float, float]:
+    alt = math.radians(alt_deg)
+    az = math.radians(az_deg)
+    cos_alt = math.cos(alt)
+    return cos_alt * math.sin(az), cos_alt * math.cos(az), math.sin(alt)
+
+
+def segment_closest_approach(
+    alt1_deg: float,
+    az1_deg: float,
+    alt2_deg: float,
+    az2_deg: float,
+    target_alt_deg: float,
+    target_az_deg: float,
+) -> tuple[float, float, float, float]:
+    """Find closest approach along the chord between two sky positions to a target.
+
+    Returns (min_sep_deg, fraction_u, interp_alt_deg, interp_az_deg).
+    """
+    v1 = _altaz_to_unit(alt1_deg, az1_deg)
+    v2 = _altaz_to_unit(alt2_deg, az2_deg)
+    vt = _altaz_to_unit(target_alt_deg, target_az_deg)
+
+    dx = v2[0] - v1[0]
+    dy = v2[1] - v1[1]
+    dz = v2[2] - v1[2]
+    denom = dx * dx + dy * dy + dz * dz
+    if denom < 1e-15:
+        sep = angular_separation_deg(alt1_deg, az1_deg, target_alt_deg, target_az_deg)
+        return sep, 0.0, alt1_deg, az1_deg % 360.0
+
+    num = (vt[0] - v1[0]) * dx + (vt[1] - v1[1]) * dy + (vt[2] - v1[2]) * dz
+    u = max(0.0, min(1.0, num / denom))
+
+    px = v1[0] + u * dx
+    py = v1[1] + u * dy
+    pz = v1[2] + u * dz
+    norm = math.sqrt(px * px + py * py + pz * pz)
+    if norm > 0.0:
+        px /= norm
+        py /= norm
+        pz /= norm
+
+    interp_alt_deg = math.degrees(math.asin(max(-1.0, min(1.0, pz))))
+    interp_az_deg = math.degrees(math.atan2(px, py)) % 360.0
+    min_sep = angular_separation_deg(interp_alt_deg, interp_az_deg, target_alt_deg, target_az_deg)
+    return min_sep, u, interp_alt_deg, interp_az_deg
+
+
+def sky_tangent_offset_deg(
+    alt_deg: float,
+    az_deg: float,
+    ref_alt_deg: float,
+    ref_az_deg: float,
+) -> tuple[float, float]:
+    """Return local tangent-plane offsets (dx_east_deg, dy_up_deg) around a reference sky point."""
+    d_az = ((az_deg - ref_az_deg + 180.0) % 360.0) - 180.0
+    dx_deg = d_az * math.cos(math.radians(ref_alt_deg))
+    dy_deg = alt_deg - ref_alt_deg
+    return dx_deg, dy_deg

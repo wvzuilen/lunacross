@@ -7,8 +7,10 @@ A Python tool that computes the exact apparent position of the Moon from your lo
 - **High-precision lunar position (`skyfield` + JPL `de421.bsp`)**: topocentric altitude (including atmospheric refraction), azimuth + compass direction, distance in km, exact apparent angular diameter, illumination percentage, lunar phase, and next moonrise/moonset.
 - **Local ADS-B receiver integration**: reads live `/data/aircraft.json` from a local `tar1090`/`readsb` feed and can optionally sync coordinates from `/data/receiver.json` (`--sync-receiver`).
 - **3D WGS-84 line-of-sight geometry**: transforms aircraft positions (`lat`, `lon`, `alt_geom` / `alt_baro`) via ECEF → local ENU into exact apparent viewing angles (azimuth & altitude) with altitude-scaled refraction and `seen_pos` dead-reckoning.
-- **Lookahead trajectory prediction**: projects flight paths up to 120 seconds ahead along a great circle to warn of upcoming crossings (`INCOMING`) before the aircraft crosses the Moon.
-- **Alerts & logging**: live terminal dashboard (`rich`), JSONL event log (`transits.jsonl`), Pushover push notifications (including a direct link to the aircraft in `tar1090`), macOS Notification Center alerts, and optional webhook support (e.g. for `n8n` or Home Assistant).
+- **Lookahead trajectory prediction & sub-second detection**: projects flight paths ahead along a great circle to warn of upcoming crossings (`INCOMING`) while interpolating between 1-second ADS-B polls so fast aircraft never slip across the lunar disk undetected.
+- **Complete close-pass track recording**: every aircraft entering `log_margin_deg` (default `5.0°`) is recorded with its full topocentric sky track (`passes.jsonl`) and true closest approach.
+- **Observer-perspective visualization & Web UI**: generates dark-mode SVG/HTML charts showing your horizon, compass bearings, Moon phase, and aircraft trajectory (both real-time and post-hoc replay), served via an optional built-in Web UI (`web_port = 8091`) or `lunacross render`.
+- **Alerts & logging**: live terminal dashboard (`rich`), JSONL logs (`transits.jsonl` & `passes.jsonl`), Pushover push notifications (including a direct link to `tar1090`), macOS Notification Center alerts, and optional webhook support.
 
 ## Installation
 
@@ -70,13 +72,35 @@ Receive instant Pushover alerts when an aircraft is on course to cross the Moon 
    uv run lunacross simulate --pushover
    ```
 
+## Sky Visualization & Web UI
+
+Generate an observer-perspective sky chart (horizon, compass ticks, Moon phase, aircraft path, and zoomed lunar inset) directly from the CLI:
+
+```bash
+# List all recorded close passes
+uv run lunacross render --list
+
+# Render the latest recorded pass (or pass --pass-id <id>) to an interactive HTML or SVG file
+uv run lunacross render -o pass.html
+
+# Render the current live sky + 60s predicted flight paths
+uv run lunacross render --live -o live_sky.html
+
+# Simulate a lunar transit and render its sky chart
+uv run lunacross simulate --render sim_transit.html
+```
+
+To enable the built-in real-time Web UI (with auto-refreshing **Live Sky View** and **Recorded Passes** replay), set `web_port = 8091` in `config.toml` (or pass `--web-port 8091`), then open `http://<server-ip>:8091`.
+
 ## Docker (24/7 Server Deployment)
 
 1. Create `config.toml` from `config.example.toml` and set the container paths:
    ```toml
    log_file = "/data/transits.jsonl"
+   passes_file = "/data/passes.jsonl"
    ephemeris_dir = "/data/skyfield"
    notify_macos = false
+   web_port = 8091
    ```
 2. Build and start the container (`restart: unless-stopped`):
    ```bash

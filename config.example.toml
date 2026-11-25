@@ -15,6 +15,9 @@ poll_interval_s = 1.0
 # Angular margin (degrees) around the lunar limb for NEAR_MISS / INCOMING alerts
 alert_margin_deg = 0.5
 
+# Angular radius (degrees) from Moon center to record complete close-pass tracks
+log_margin_deg = 5.0
+
 # Lookahead horizon in seconds for flight path prediction
 predict_horizon_s = 120.0
 
@@ -26,6 +29,9 @@ max_seen_pos_s = 30.0
 
 # JSONL log file for detected transit events
 log_file = "transits.jsonl"
+
+# JSONL file storing full trajectory records for every pass within log_margin_deg
+passes_file = "passes.jsonl"
 
 # Show macOS Notification Center alerts on transit or incoming transit
 notify_macos = true
@@ -44,9 +50,16 @@ notify_macos = true
 pushover_priority = 1
 # Comma-separated event types to send via Pushover: INCOMING, TRANSIT, NEAR_MISS
 pushover_events = "INCOMING,TRANSIT"
+# Maximum lead time (seconds) before closest approach to trigger an INCOMING Pushover alert
+pushover_max_lead_s = 60.0
+# Angular margin (degrees) around the lunar limb for INCOMING alerts
+pushover_margin_deg = 0.25
 
 # Cache directory for Skyfield ephemeris files (de421.bsp)
 ephemeris_dir = ".cache/skyfield"
 
 # Maximum number of closest aircraft shown in the dashboard table
 top_n = 12
+
+# Built-in Live Sky View & Pass Replay web server port (0 = disabled, e.g. 8091)
+web_port = 0

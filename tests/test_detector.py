@@ -83,6 +83,107 @@ def test_direct_transit_and_deduplication() -> None:
     assert events2 == []
 
 
+def test_subsecond_transit_interpolation_and_pass_recording() -> None:
+    moon = _test_moon(alt_deg=35.0, az_deg=180.0)
+    cross_lat, cross_lon, alt_m = _aircraft_on_moon_line(moon)
+    gs_kt = 500.0
+    # 0.5s before and 0.5s after crossing the lunar disk at ~0.8°/s -> endpoints ~0.4° from Moon center (> 0.26° radius)
+    lat1, lon1, _ = extrapolate_position(
+        cross_lat, cross_lon, alt_m, ground_speed_kt=gs_kt, track_deg=270.0, vertical_rate_fpm=0.0, dt_s=0.6
+    )
+    lat2, lon2, _ = extrapolate_position(
+        cross_lat, cross_lon, alt_m, ground_speed_kt=gs_kt, track_deg=90.0, vertical_rate_fpm=0.0, dt_s=0.6
+    )
+
+    def mk_ac(lat: float, lon: float) -> Aircraft:
+        return Aircraft(
+            hex="484aaa",
+            flight="FAST1",
+            registration=None,
+            aircraft_type="B77W",
+            category="A5",
+            lat=lat,
+            lon=lon,
+            altitude_m=alt_m,
+            altitude_ft=35000.0,
+            altitude_source="geom",
+            ground_speed_kt=gs_kt,
+            track_deg=90.0,
+            vertical_rate_fpm=0.0,
+            seen_pos_s=0.0,
+            squawk=None,
+            rssi=None,
+        )
+
+    detector = TransitDetector(OBS_LAT, OBS_LON, OBS_ALT_M, alert_margin_deg=0.3, log_margin_deg=5.0)
+    t0 = datetime(2026, 11, 24, 22, 0, 0, tzinfo=timezone.utc)
+    s1, _ = detector.evaluate(moon, [mk_ac(lat1, lon1)], now_utc=t0)
+    assert s1[0].status != "TRANSIT"
+
+    s2, ev2 = detector.evaluate(moon, [mk_ac(lat2, lon2)], now_utc=t0 + timedelta(seconds=1))
+    assert s2[0].status == "TRANSIT"
+    assert any(e.event_type == "TRANSIT" for e in ev2)
+
+    # Move aircraft far away (> 6.5° for 5 samples) to finalize pass record
+    far_lat, far_lon, _ = extrapolate_position(
+        cross_lat, cross_lon, alt_m, ground_speed_kt=gs_kt, track_deg=90.0, vertical_rate_fpm=0.0, dt_s=20.0
+    )
+    for step in range(2, 8):
+        detector.evaluate(moon, [mk_ac(far_lat, far_lon)], now_utc=t0 + timedelta(seconds=step))
+
+    completed = detector.pop_completed_passes()
+    assert len(completed) == 1
+    rec = completed[0]
+    assert rec.flight == "FAST1"
+    assert rec.classification == "TRANSIT"
+    assert rec.crossed_lunar_disk is True
+    assert rec.min_angular_sep_deg < moon.angular_radius_deg
+    assert any(pt.interpolated for pt in rec.track)
+
+
+def test_incoming_alert_respects_lead_time_and_margin() -> None:
+    moon = _test_moon()
+    cross_lat, cross_lon, alt_m = _aircraft_on_moon_line(moon)
+    gs_kt = 450.0
+    far_lat, far_lon, _ = extrapolate_position(
+        cross_lat, cross_lon, alt_m, ground_speed_kt=gs_kt, track_deg=270.0, vertical_rate_fpm=0.0, dt_s=90.0
+    )
+    ac_far = Aircraft(
+        hex="484bbb",
+        flight="FAR90",
+        registration=None,
+        aircraft_type="A320",
+        category="A3",
+        lat=far_lat,
+        lon=far_lon,
+        altitude_m=alt_m,
+        altitude_ft=35000.0,
+        altitude_source="geom",
+        ground_speed_kt=gs_kt,
+        track_deg=90.0,
+        vertical_rate_fpm=0.0,
+        seen_pos_s=0.0,
+        squawk=None,
+        rssi=None,
+    )
+
+    detector = TransitDetector(
+        OBS_LAT,
+        OBS_LON,
+        OBS_ALT_M,
+        predict_horizon_s=120.0,
+        incoming_alert_lead_s=60.0,
+        incoming_alert_margin_deg=0.25,
+    )
+    t0 = datetime(2026, 11, 24, 22, 0, 0, tzinfo=timezone.utc)
+    sightings, events = detector.evaluate(moon, [ac_far], now_utc=t0)
+    # Prediction is still shown on the sighting, but no premature INCOMING event is emitted at 90s
+    assert sightings[0].time_to_closest_s is not None
+    assert sightings[0].time_to_closest_s > 60.0
+    assert sightings[0].status == "TRACKING"
+    assert events == []
+
+
 def test_incoming_prediction_and_upgrade_to_transit() -> None:
     moon = _test_moon()
     cross_lat, cross_lon, alt_m = _aircraft_on_moon_line(moon)

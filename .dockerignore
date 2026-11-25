@@ -7,6 +7,7 @@ __pycache__/
 config.toml
 monitor.log
 transits.jsonl
+passes.jsonl
 .env
 .env.*
 tests/

@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .cache/
 transits.jsonl
+passes.jsonl
 monitor.log
 config.toml
 .env

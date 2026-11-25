@@ -11,6 +11,8 @@ from lunacross.geometry import (
     angular_separation_deg,
     estimate_aircraft_angular_size_deg,
     extrapolate_position,
+    segment_closest_approach,
+    sky_tangent_offset_deg,
 )
 
 OBS_LAT = 52.3731
@@ -86,3 +88,24 @@ def test_aircraft_angular_size() -> None:
     ang = estimate_aircraft_angular_size_deg(slant_range_km=20.0, category="A5")
     # 65m at 20km ~ 0.186°
     assert 0.15 < ang < 0.22
+
+
+def test_segment_closest_approach_midpoint_crossing() -> None:
+    sep, u, interp_alt, interp_az = segment_closest_approach(
+        alt1_deg=40.0,
+        az1_deg=179.0,
+        alt2_deg=40.0,
+        az2_deg=181.0,
+        target_alt_deg=40.0,
+        target_az_deg=180.0,
+    )
+    assert u == pytest.approx(0.5, abs=1e-3)
+    assert sep < 0.02
+    assert interp_alt == pytest.approx(40.0, abs=0.05)
+    assert interp_az == pytest.approx(180.0, abs=0.05)
+
+
+def test_sky_tangent_offset_wraparound() -> None:
+    dx, dy = sky_tangent_offset_deg(alt_deg=41.5, az_deg=1.0, ref_alt_deg=40.0, ref_az_deg=359.0)
+    assert dx == pytest.approx(2.0 * math.cos(math.radians(40.0)), abs=1e-4)
+    assert dy == pytest.approx(1.5, abs=1e-6)

@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from lunacross.detector import TransitEvent
+from lunacross.detector import PassRecord, TransitEvent
 from lunacross.moon import compass_direction
 
 PUSHOVER_API_URL = "https://api.pushover.net/1/messages.json"
@@ -31,6 +31,24 @@ def build_tar1090_aircraft_url(adsb_url: str | None, hex_code: str) -> str | Non
     return f"{parts.scheme}://{parts.netloc}/?icao={hex_code.strip().lower()}"
 
 
+def load_passes(passes_file: str | Path) -> list[PassRecord]:
+    """Load recorded PassRecord entries from a JSONL file (oldest first)."""
+    path = Path(passes_file)
+    if not path.is_file():
+        return []
+    records: list[PassRecord] = []
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                records.append(PassRecord.from_dict(json.loads(stripped)))
+            except Exception:
+                continue
+    return records
+
+
 class TransitNotifier:
     """Dispatches detected lunar transit events to JSONL log, macOS, Pushover, and webhook."""
 
@@ -40,6 +58,7 @@ class TransitNotifier:
         notify_macos: bool = True,
         webhook_url: str | None = None,
         *,
+        passes_file: str | Path | None = "passes.jsonl",
         pushover_app_token: str | None = None,
         pushover_user_key: str | None = None,
         pushover_device: str | None = None,
@@ -49,6 +68,7 @@ class TransitNotifier:
         adsb_url: str | None = None,
     ) -> None:
         self.log_path = Path(log_file) if log_file else None
+        self.passes_path = Path(passes_file) if passes_file else None
         self.notify_macos = notify_macos
         self.webhook_url = webhook_url
         self.pushover_app_token = pushover_app_token.strip() if pushover_app_token else None
@@ -104,6 +124,14 @@ class TransitNotifier:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload) + "\n")
+
+    def write_pass(self, record: PassRecord) -> None:
+        """Append a completed close-pass track record to passes.jsonl."""
+        if self.passes_path is None:
+            return
+        self.passes_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.passes_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record.to_dict()) + "\n")
 
     def _send_macos_notification(self, event: TransitEvent) -> None:
         if not self.notify_macos or sys.platform != "darwin":

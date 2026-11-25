@@ -15,4 +15,6 @@ COPY src ./src
 RUN pip install --no-cache-dir . \
     && mkdir -p /config /data
 
+EXPOSE 8091
+
 CMD ["lunacross", "--config", "/config/config.toml", "monitor"]
