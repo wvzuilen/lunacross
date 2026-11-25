@@ -12,6 +12,18 @@ A Python tool that computes the exact apparent position of the Moon from your lo
 - **Observer-perspective visualization & Web UI**: generates dark-mode SVG/HTML charts showing your horizon, compass bearings, Moon phase, and aircraft trajectory (both real-time and post-hoc replay), served via an optional built-in Web UI (`web_port = 8091`) or `lunacross render`.
 - **Alerts & logging**: live terminal dashboard (`rich`), JSONL logs (`transits.jsonl` & `passes.jsonl`), Pushover push notifications (including a direct link to `tar1090`), macOS Notification Center alerts, and optional webhook support.
 
+## UI Preview
+
+### Live Sky View
+*Example using demo coordinates (`52.3731° N, 4.8926° E`): real-time observer horizon, Moon phase, solid observed tracks, and 60s dashed flight path predictions.*
+
+![LunaCross Live Sky View](docs/ui-live-sky.png)
+
+### Pass Replay
+*Post-hoc visualization of a simulated lunar transit (`KLM999`), showing both the wide horizon perspective and the zoomed lunar inset.*
+
+![LunaCross Pass Replay](docs/ui-pass-replay.png)
+
 ## Installation
 
 ```bash
