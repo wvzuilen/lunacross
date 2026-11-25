@@ -302,3 +302,50 @@ def test_near_miss_status() -> None:
     assert sightings[0].status == "NEAR_MISS"
     assert len(events) == 1
     assert events[0].event_type == "NEAR_MISS"
+
+
+def test_prediction_accounts_for_moon_motion() -> None:
+    # Moon starts at 34.8° altitude and drifts upward at +0.005°/s -> reaches 35.0° in 40s!
+    moving_moon = MoonPosition(
+        timestamp_utc=datetime(2026, 11, 24, 22, 0, 0, tzinfo=timezone.utc),
+        altitude_deg=34.8,
+        azimuth_deg=180.0,
+        distance_km=384400.0,
+        angular_radius_deg=0.259,
+        angular_diameter_deg=0.518,
+        illumination_pct=85.0,
+        phase_deg=140.0,
+        phase_name="Waxing Gibbous",
+        is_above_horizon=True,
+        alt_rate_deg_s=0.005,
+        az_rate_deg_s=0.0,
+    )
+    target_moon_at_40s = _test_moon(alt_deg=35.0, az_deg=180.0)
+    cross_lat, cross_lon, alt_m = _aircraft_on_moon_line(target_moon_at_40s)
+    gs_kt = 450.0
+    start_lat, start_lon, _ = extrapolate_position(
+        cross_lat, cross_lon, alt_m, ground_speed_kt=gs_kt, track_deg=270.0, vertical_rate_fpm=0.0, dt_s=40.0
+    )
+    ac = Aircraft(
+        hex="484ccc",
+        flight="MOV40",
+        registration=None,
+        aircraft_type="B77W",
+        category="A5",
+        lat=start_lat,
+        lon=start_lon,
+        altitude_m=alt_m,
+        altitude_ft=35000.0,
+        altitude_source="geom",
+        ground_speed_kt=gs_kt,
+        track_deg=90.0,
+        vertical_rate_fpm=0.0,
+        seen_pos_s=0.0,
+        squawk=None,
+        rssi=None,
+    )
+    detector = TransitDetector(OBS_LAT, OBS_LON, OBS_ALT_M, alert_margin_deg=0.5)
+    sightings, _ = detector.evaluate(moving_moon, [ac])
+    assert sightings[0].min_predicted_sep_deg is not None
+    # With dynamic Moon motion, predicted separation at t~40s is well under 0.2° (vs >0.2° if static at 34.8°)
+    assert sightings[0].min_predicted_sep_deg < 0.18

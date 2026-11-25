@@ -128,6 +128,7 @@ def test_pushover_sends_incoming_and_transit_and_filters_near_miss(monkeypatch, 
     assert "Lunar transit in 38s: KLM999" in data1["title"]
     assert "approaching the Moon" in data1["message"]
     assert "Crossing lunar disk" in data1["message"]
+    assert "Visibility: Naked eye" in data1["message"]
 
     _, data2 = calls[1]
     assert "Crossing Moon NOW: KLM999" in data2["title"]
@@ -154,3 +155,24 @@ def test_pushover_skipped_without_credentials(monkeypatch, tmp_path) -> None:
     assert notifier.pushover_enabled is False
     notifier.notify(_sample_event("INCOMING"))
     assert called is False
+
+
+def test_pushover_min_angular_arcmin_filter(monkeypatch, tmp_path) -> None:
+    calls: list[dict[str, str]] = []
+
+    def fake_post(url: str, *, data: dict[str, str] | None = None, **kwargs: Any) -> _DummyResponse:
+        calls.append(dict(data or {}))
+        return _DummyResponse()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    # _sample_event has plane_angular_size_deg = 0.29° = 17.4'; setting threshold to 20.0' filters Pushover out
+    notifier = TransitNotifier(
+        log_file=tmp_path / "transits.jsonl",
+        notify_macos=False,
+        pushover_app_token="app-tok-123",
+        pushover_user_key="usr-key-456",
+        pushover_min_angular_arcmin=20.0,
+    )
+    notifier.notify(_sample_event("TRANSIT"))
+    assert calls == []

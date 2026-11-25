@@ -513,10 +513,12 @@ def render_live_snapshot_svg(
     usable_r = min(right_w, right_h - 40.0) * 0.45
     px_per_deg = usable_r / half_fov
 
-    def map_right(alt_deg: float, az_deg: float) -> tuple[float, float]:
-        dx_deg, dy_deg = sky_tangent_offset_deg(alt_deg, az_deg, moon.altitude_deg, moon.azimuth_deg)
+    def map_right_at(alt_deg: float, az_deg: float, dt_s: float = 0.0) -> tuple[float, float]:
+        m_alt, m_az = moon.at_offset(dt_s)
+        dx_deg, dy_deg = sky_tangent_offset_deg(alt_deg, az_deg, m_alt, m_az)
         return rcx + dx_deg * px_per_deg, rcy - dy_deg * px_per_deg
 
+    obs_hae_m = cfg.elevation_m + cfg.geoid_undulation_m
     left_body: list[str] = []
     right_body: list[str] = []
 
@@ -538,7 +540,13 @@ def render_live_snapshot_svg(
             )
             rz_str = " ".join(
                 f"{zx:.1f},{zy:.1f}"
-                for zx, zy in (map_right(pt.aircraft_alt_deg, pt.aircraft_az_deg) for pt in past_pts)
+                for zx, zy in (
+                    (
+                        rcx + sky_tangent_offset_deg(pt.aircraft_alt_deg, pt.aircraft_az_deg, pt.moon_alt_deg, pt.moon_az_deg)[0] * px_per_deg,
+                        rcy - sky_tangent_offset_deg(pt.aircraft_alt_deg, pt.aircraft_az_deg, pt.moon_alt_deg, pt.moon_az_deg)[1] * px_per_deg,
+                    )
+                    for pt in past_pts
+                )
             )
             right_body.append(
                 f'<polyline points="{rz_str}" fill="none" stroke="{color}" stroke-width="1.8" opacity="0.7"/>'
@@ -546,7 +554,7 @@ def render_live_snapshot_svg(
 
         # Future trajectory (dashed)
         if ac.ground_speed_kt and ac.track_deg is not None and ac.ground_speed_kt > 20.0:
-            fut_coords: list[tuple[float, float]] = [(s.sky_pos.altitude_deg, s.sky_pos.azimuth_deg)]
+            fut_coords: list[tuple[float, float, float]] = [(s.sky_pos.altitude_deg, s.sky_pos.azimuth_deg, 0.0)]
             for step in range(5, int(predict_s) + 1, 5):
                 plat, plon, palt = extrapolate_position(
                     ac.lat,
@@ -556,19 +564,20 @@ def render_live_snapshot_svg(
                     ac.track_deg,
                     ac.vertical_rate_fpm,
                     float(step),
+                    track_rate_deg_s=ac.track_rate_deg_s,
                 )
-                sky_f = aircraft_altaz(cfg.latitude, cfg.longitude, cfg.elevation_m, plat, plon, palt)
+                sky_f = aircraft_altaz(cfg.latitude, cfg.longitude, obs_hae_m, plat, plon, palt)
                 if sky_f.altitude_deg > -2.0:
-                    fut_coords.append((sky_f.altitude_deg, sky_f.azimuth_deg))
+                    fut_coords.append((sky_f.altitude_deg, sky_f.azimuth_deg, float(step)))
             if len(fut_coords) >= 2:
                 f_str = " ".join(
-                    f"{px:.1f},{py:.1f}" for px, py in (map_left(a, z) for a, z in fut_coords)
+                    f"{px:.1f},{py:.1f}" for px, py in (map_left(a, z) for a, z, _ in fut_coords)
                 )
                 left_body.append(
                     f'<polyline points="{f_str}" fill="none" stroke="{color}" stroke-width="1.4" stroke-dasharray="4 4" opacity="0.75"/>'
                 )
                 rf_str = " ".join(
-                    f"{zx:.1f},{zy:.1f}" for zx, zy in (map_right(a, z) for a, z in fut_coords)
+                    f"{zx:.1f},{zy:.1f}" for zx, zy in (map_right_at(a, z, dt_s) for a, z, dt_s in fut_coords)
                 )
                 right_body.append(
                     f'<polyline points="{rf_str}" fill="none" stroke="{color}" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.8"/>'
@@ -582,7 +591,7 @@ def render_live_snapshot_svg(
             f'{html.escape(ac.flight)} ({s.angular_sep_deg:.1f}°)</text>'
         )
 
-        zx_px, zy_px = map_right(s.sky_pos.altitude_deg, s.sky_pos.azimuth_deg)
+        zx_px, zy_px = map_right_at(s.sky_pos.altitude_deg, s.sky_pos.azimuth_deg, 0.0)
         right_body.append(f'<circle cx="{zx_px:.1f}" cy="{zy_px:.1f}" r="4.0" fill="{color}" stroke="#0f172a" stroke-width="1.2"/>')
         right_body.append(
             f'<text x="{zx_px + 7:.1f}" y="{zy_px + 3:.1f}" fill="#e2e8f0" font-size="10" font-family="ui-monospace, monospace">{html.escape(ac.flight)}</text>'

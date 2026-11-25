@@ -9,8 +9,11 @@ import pytest
 from lunacross.geometry import (
     aircraft_altaz,
     angular_separation_deg,
+    classify_visual_visibility,
     estimate_aircraft_angular_size_deg,
     extrapolate_position,
+    geodetic_to_ecef,
+    ecef_to_enu,
     segment_closest_approach,
     sky_tangent_offset_deg,
 )
@@ -109,3 +112,36 @@ def test_sky_tangent_offset_wraparound() -> None:
     dx, dy = sky_tangent_offset_deg(alt_deg=41.5, az_deg=1.0, ref_alt_deg=40.0, ref_az_deg=359.0)
     assert dx == pytest.approx(2.0 * math.cos(math.radians(40.0)), abs=1e-4)
     assert dy == pytest.approx(1.5, abs=1e-6)
+
+
+def test_wgs84_ellipsoidal_east_extrapolation_and_turn_rate() -> None:
+    # 100 m/s due East for 100s = 10,000 m at 10,000 m altitude
+    gs_kt = 100.0 / 0.5144444444
+    lat2, lon2, alt2 = extrapolate_position(
+        OBS_LAT, OBS_LON, 10000.0, ground_speed_kt=gs_kt, track_deg=90.0, vertical_rate_fpm=0.0, dt_s=100.0
+    )
+    ox, oy, oz = geodetic_to_ecef(OBS_LAT, OBS_LON, 10000.0)
+    ax, ay, az = geodetic_to_ecef(lat2, lon2, alt2)
+    east, north, _ = ecef_to_enu(ax - ox, ay - oy, az - oz, OBS_LAT, OBS_LON)
+    # True 3D chord/arc East distance at 10 km altitude should match 10,000 m within < 2 m
+    assert math.hypot(east, north) == pytest.approx(10000.0, abs=2.0)
+
+    # Positive turn rate from North (0°) deflects aircraft Eastward
+    _, lon_turn, _ = extrapolate_position(
+        OBS_LAT, OBS_LON, 10000.0, ground_speed_kt=gs_kt, track_deg=0.0, vertical_rate_fpm=0.0, dt_s=10.0, track_rate_deg_s=1.5
+    )
+    assert lon_turn > OBS_LON
+
+
+def test_icao_type_angular_size_and_visibility_tiers() -> None:
+    # CL35 (21m) at 41.4 km against 97.8% Full Moon -> BINOCULARS (~1.74')
+    cl35_deg = estimate_aircraft_angular_size_deg(41.4, category="A2", aircraft_type="CL35")
+    tier_cl, label_cl = classify_visual_visibility(cl35_deg, moon_illumination_pct=97.8)
+    assert tier_cl == "BINOCULARS"
+    assert "Binoculars" in label_cl
+
+    # B77W (64.8m) at 18.0 km against Full Moon -> NAKED_EYE (~12.4')
+    b77w_deg = estimate_aircraft_angular_size_deg(18.0, category="A5", aircraft_type="B77W")
+    tier_77, label_77 = classify_visual_visibility(b77w_deg, moon_illumination_pct=99.0)
+    assert tier_77 == "NAKED_EYE"
+    assert "Naked eye" in label_77

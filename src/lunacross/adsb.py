@@ -33,6 +33,7 @@ class Aircraft:
     squawk: str | None
     rssi: float | None
     source: str = "local"
+    track_rate_deg_s: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,7 @@ def parse_aircraft_payload(
     max_seen_pos_s: float = 30.0,
     *,
     source: str = "local",
+    geoid_undulation_m: float = 0.0,
 ) -> AdsbSnapshot:
     """Parse a tar1090/readsb aircraft.json or v2 community API dictionary into an AdsbSnapshot."""
     raw_list = data.get("aircraft")
@@ -85,9 +87,18 @@ def parse_aircraft_payload(
         if _is_number(alt_geom):
             altitude_ft = float(alt_geom)
             altitude_source = "geom"
+            # RTCA DO-260B alt_geom is GNSS Height Above WGS-84 Ellipsoid (HAE)
+            altitude_m = altitude_ft * FEET_TO_METERS
         elif _is_number(alt_baro):
             altitude_ft = float(alt_baro)
             altitude_source = "baro"
+            nav_qnh = item.get("nav_qnh")
+            qnh_corr_ft = (
+                (float(nav_qnh) - 1013.25) * 27.3
+                if _is_number(nav_qnh) and 940.0 <= float(nav_qnh) <= 1060.0
+                else 0.0
+            )
+            altitude_m = (altitude_ft + qnh_corr_ft) * FEET_TO_METERS + geoid_undulation_m
         else:
             # Skip ground traffic ("ground") and aircraft without altitude
             continue
@@ -100,6 +111,13 @@ def parse_aircraft_payload(
             vertical_rate_fpm = float(baro_rate)
         else:
             vertical_rate_fpm = 0.0
+
+        raw_track_rate = item.get("track_rate")
+        track_rate_deg_s = (
+            float(raw_track_rate)
+            if _is_number(raw_track_rate) and abs(float(raw_track_rate)) <= 10.0
+            else 0.0
+        )
 
         hex_code = str(item.get("hex") or "").strip().lower()
         raw_flight = str(item.get("flight") or "").strip()
@@ -118,7 +136,7 @@ def parse_aircraft_payload(
                 category=item.get("category"),
                 lat=float(lat),
                 lon=float(lon),
-                altitude_m=altitude_ft * FEET_TO_METERS,
+                altitude_m=altitude_m,
                 altitude_ft=altitude_ft,
                 altitude_source=altitude_source,
                 ground_speed_kt=float(gs) if _is_number(gs) else None,
@@ -128,6 +146,7 @@ def parse_aircraft_payload(
                 squawk=item.get("squawk"),
                 rssi=float(rssi) if _is_number(rssi) else None,
                 source=source,
+                track_rate_deg_s=track_rate_deg_s,
             )
         )
 
@@ -145,12 +164,7 @@ def merge_snapshots(
     supplement_age_s: float = 0.0,
     max_seen_pos_s: float = 30.0,
 ) -> AdsbSnapshot:
-    """Merge primary local ADS-B aircraft with an optional community supplement snapshot.
-
-    Primary aircraft keep their local real-time kinematics while inheriting missing
-    metadata (registration, type, category) from the supplement. Supplement-only
-    aircraft have their seen_pos_s aged by supplement_age_s for dead-reckoning.
-    """
+    """Merge primary local ADS-B aircraft with an optional community supplement snapshot."""
     if primary is None and supplement is None:
         return AdsbSnapshot(timestamp_unix=0.0, aircraft=[], total_raw=0)
 
@@ -243,6 +257,7 @@ class AdsbClient:
         observer_lon: float | None = None,
         supplement_radius_nm: float = 45.0,
         supplement_interval_s: float = 5.0,
+        geoid_undulation_m: float = 0.0,
     ) -> None:
         self.adsb_url = adsb_url
         self.receiver_url = _derive_receiver_url(adsb_url)
@@ -250,6 +265,7 @@ class AdsbClient:
             supplement_url_template, observer_lat, observer_lon, supplement_radius_nm
         )
         self.supplement_interval_s = max(1.0, supplement_interval_s)
+        self.geoid_undulation_m = geoid_undulation_m
         self._client = httpx.Client(
             timeout=timeout_s,
             headers={"User-Agent": "LunaCross/0.1 (+https://github.com/wvzuilen/lunacross)"},
@@ -273,7 +289,12 @@ class AdsbClient:
         try:
             resp = self._client.get(self.adsb_url)
             resp.raise_for_status()
-            primary = parse_aircraft_payload(resp.json(), max_seen_pos_s=max_seen_pos_s, source="local")
+            primary = parse_aircraft_payload(
+                resp.json(),
+                max_seen_pos_s=max_seen_pos_s,
+                source="local",
+                geoid_undulation_m=self.geoid_undulation_m,
+            )
         except httpx.HTTPError as exc:
             primary_err = exc
 
@@ -292,6 +313,7 @@ class AdsbClient:
                         s_resp.json(),
                         max_seen_pos_s=max_seen_pos_s,
                         source="supplement",
+                        geoid_undulation_m=self.geoid_undulation_m,
                     )
                     self._cached_supplement_at = now_mono
                 except httpx.HTTPError:

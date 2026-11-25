@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from lunacross.moon import MoonTracker, compass_direction, moon_phase_name
 
@@ -29,6 +31,12 @@ def test_moon_tracker_fixed_timestamp(tmp_path) -> None:
     assert rs.next_set_utc is not None
     assert rs.next_rise_utc > dt
     assert rs.next_set_utc > dt
+
+    # Verify instantaneous Moon drift velocity accurately predicts Moon position 60s later
+    pos_60 = tracker.get_position(dt + timedelta(seconds=60))
+    pred_alt, pred_az = pos.at_offset(60.0)
+    assert pred_alt == pytest.approx(pos_60.altitude_deg, abs=0.002)
+    assert pred_az == pytest.approx(pos_60.azimuth_deg, abs=0.002)
 
 
 def test_compass_and_phase_helpers() -> None:

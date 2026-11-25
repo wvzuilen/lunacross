@@ -151,3 +151,38 @@ def test_parse_community_v2_payload_and_merge() -> None:
     assert supp_ac.source == "supplement"
     assert supp_ac.seen_pos_s == pytest.approx(4.5)
     assert supp_ac.aircraft_type == "E295"
+
+
+def test_baro_qnh_and_geoid_undulation_conversion() -> None:
+    payload = {
+        "now": 1795556720.0,
+        "aircraft": [
+            {
+                "hex": "111aaa",
+                "alt_geom": 10000,
+                "alt_baro": 10200,
+                "nav_qnh": 1025.25,
+                "track_rate": -0.75,
+                "lat": 52.0,
+                "lon": 5.0,
+                "seen_pos": 0.5,
+            },
+            {
+                "hex": "222bbb",
+                "alt_baro": 10000,
+                "nav_qnh": 1023.25,
+                "lat": 52.1,
+                "lon": 5.1,
+                "seen_pos": 0.5,
+            },
+        ],
+    }
+    snap = parse_aircraft_payload(payload, geoid_undulation_m=44.4)
+    geom_ac, baro_ac = snap.aircraft
+    # alt_geom is already WGS-84 HAE: unaffected by QNH or geoid_undulation_m
+    assert geom_ac.altitude_m == pytest.approx(10000.0 * 0.3048)
+    assert geom_ac.track_rate_deg_s == pytest.approx(-0.75)
+
+    # alt_baro gets +10 hPa QNH (+273 ft) + 44.4 m geoid undulation to convert MSL -> WGS-84 HAE
+    expected_m = (10000.0 + 10.0 * 27.3) * 0.3048 + 44.4
+    assert baro_ac.altitude_m == pytest.approx(expected_m, abs=0.05)

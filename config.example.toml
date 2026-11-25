@@ -1,10 +1,12 @@
 # Example configuration for LunaCross
 # Copy this file to config.toml to customize your settings.
 
-# Exact observer location (WGS-84)
+# Exact observer location (WGS-84) and orthometric elevation above Mean Sea Level (MSL)
 latitude = 52.3731
 longitude = 4.8926
 elevation_m = 2.0
+# Height of local MSL/geoid above the WGS-84 ellipsoid in meters (e.g. ~44.4 in the Netherlands)
+geoid_undulation_m = 43.3
 
 # URL to your ADS-B receiver's tar1090/readsb JSON feed
 adsb_url = "http://adsb.local:8090/data/aircraft.json"
@@ -60,6 +62,8 @@ pushover_events = "INCOMING,TRANSIT"
 pushover_max_lead_s = 60.0
 # Angular margin (degrees) around the lunar limb for INCOMING alerts
 pushover_margin_deg = 0.25
+# Optional minimum apparent aircraft size (arcminutes) required to send a Pushover alert (0.0 = all)
+pushover_min_angular_arcmin = 0.0
 
 # Cache directory for Skyfield ephemeris files (de421.bsp)
 ephemeris_dir = ".cache/skyfield"

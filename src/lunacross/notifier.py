@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from lunacross.detector import PassRecord, TransitEvent
+from lunacross.geometry import classify_visual_visibility
 from lunacross.moon import compass_direction
 
 PUSHOVER_API_URL = "https://api.pushover.net/1/messages.json"
@@ -65,6 +66,7 @@ class TransitNotifier:
         pushover_sound: str | None = None,
         pushover_priority: int = 1,
         pushover_events: str = "INCOMING,TRANSIT",
+        pushover_min_angular_arcmin: float = 0.0,
         adsb_url: str | None = None,
     ) -> None:
         self.log_path = Path(log_file) if log_file else None
@@ -81,6 +83,7 @@ class TransitNotifier:
             for part in pushover_events.split(",")
             if part.strip()
         }
+        self.pushover_min_angular_arcmin = max(0.0, float(pushover_min_angular_arcmin))
         self.adsb_url = adsb_url
 
     @property
@@ -92,6 +95,7 @@ class TransitNotifier:
         s = event.sighting
         ac = s.aircraft
         m = event.moon
+        vis_tier, _ = classify_visual_visibility(s.plane_angular_size_deg, m.illumination_pct)
         return {
             "timestamp_utc": event.timestamp_utc.isoformat(),
             "event_type": event.event_type,
@@ -105,6 +109,8 @@ class TransitNotifier:
             "aircraft_az_deg": round(s.sky_pos.azimuth_deg, 3),
             "angular_sep_deg": round(s.angular_sep_deg, 4),
             "moon_radii": round(s.moon_radii, 2),
+            "plane_angular_arcmin": round(s.plane_angular_size_deg * 60.0, 2),
+            "visibility": vis_tier,
             "min_predicted_sep_deg": (
                 round(s.min_predicted_sep_deg, 4) if s.min_predicted_sep_deg is not None else None
             ),
@@ -174,11 +180,15 @@ class TransitNotifier:
         ac = s.aircraft
         m = event.moon
         type_suffix = f" ({ac.aircraft_type})" if ac.aircraft_type else ""
+        _, vis_label = classify_visual_visibility(s.plane_angular_size_deg, m.illumination_pct)
         moon_info = (
             f"Moon: alt {m.altitude_deg:.1f}°, az {m.azimuth_deg:.1f}° "
             f"({compass_direction(m.azimuth_deg)})"
         )
-        plane_info = f"Altitude: {ac.altitude_ft:,.0f} ft | Distance: {s.sky_pos.slant_range_km:.1f} km"
+        plane_info = (
+            f"Altitude: {ac.altitude_ft:,.0f} ft | Distance: {s.sky_pos.slant_range_km:.1f} km\n"
+            f"Visibility: {vis_label}"
+        )
 
         if event.event_type == "INCOMING" and s.time_to_closest_s is not None:
             eta_local = (event.timestamp_utc + timedelta(seconds=s.time_to_closest_s)).astimezone()
@@ -275,14 +285,16 @@ class TransitNotifier:
         self._write_jsonl(payload)
         self._send_macos_notification(event)
         if self.pushover_enabled and event.event_type in self._pushover_events:
-            title, message = self._format_pushover(event)
-            tar_url = build_tar1090_aircraft_url(self.adsb_url, event.sighting.aircraft.hex)
-            self.send_pushover(
-                title,
-                message,
-                url=tar_url,
-                url_title="View on radar (tar1090)" if tar_url else None,
-                raise_on_error=False,
-            )
+            arcmin = event.sighting.plane_angular_size_deg * 60.0
+            if self.pushover_min_angular_arcmin <= 0.0 or arcmin >= self.pushover_min_angular_arcmin:
+                title, message = self._format_pushover(event)
+                tar_url = build_tar1090_aircraft_url(self.adsb_url, event.sighting.aircraft.hex)
+                self.send_pushover(
+                    title,
+                    message,
+                    url=tar_url,
+                    url_title="View on radar (tar1090)" if tar_url else None,
+                    raise_on_error=False,
+                )
         self._send_webhook(payload)
         return payload

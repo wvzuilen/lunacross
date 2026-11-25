@@ -16,6 +16,97 @@ KNOTS_TO_MPS = 0.5144444444
 FPM_TO_MPS = 0.00508
 EARTH_MEAN_RADIUS_M = 6371008.8
 ATMOSPHERE_SCALE_HEIGHT_M = 8500.0
+TURN_DAMPING_TAU_S = 15.0
+
+# Characteristic wingspan/length (meters) for common ICAO aircraft type designators
+_ICAO_TYPE_WINGSPAN_M: dict[str, float] = {
+    "A388": 79.8,
+    "B748": 68.4,
+    "B744": 64.4,
+    "A35K": 64.8,
+    "A359": 64.8,
+    "B77W": 64.8,
+    "B77L": 64.8,
+    "B772": 60.9,
+    "B773": 60.9,
+    "B788": 60.1,
+    "B789": 60.1,
+    "B78X": 60.1,
+    "A332": 60.3,
+    "A333": 60.3,
+    "A338": 64.0,
+    "A339": 64.0,
+    "A343": 60.3,
+    "A346": 63.5,
+    "MD11": 51.7,
+    "B763": 47.6,
+    "B764": 51.9,
+    "A306": 44.8,
+    "A310": 43.9,
+    "C17": 51.8,
+    "A400": 42.4,
+    "B752": 38.1,
+    "B753": 38.1,
+    "A321": 35.8,
+    "A21N": 35.8,
+    "A320": 35.8,
+    "A20N": 35.8,
+    "A319": 35.8,
+    "A19N": 35.8,
+    "A318": 34.1,
+    "B737": 34.3,
+    "B738": 35.8,
+    "B739": 35.8,
+    "B38M": 35.9,
+    "B39M": 35.9,
+    "BCS1": 35.1,
+    "BCS3": 35.1,
+    "A221": 35.1,
+    "A223": 35.1,
+    "E190": 28.7,
+    "E195": 28.7,
+    "E290": 33.7,
+    "E295": 35.1,
+    "E170": 26.0,
+    "E175": 26.0,
+    "CRJ9": 24.9,
+    "CRJX": 26.2,
+    "DH8D": 28.4,
+    "AT76": 27.1,
+    "AT75": 27.1,
+    "GL7T": 31.7,
+    "GLEX": 28.7,
+    "GL6T": 28.7,
+    "GLF6": 30.4,
+    "GLF5": 28.5,
+    "FA8X": 26.2,
+    "FA7X": 26.2,
+    "F2TH": 21.4,
+    "CL60": 19.6,
+    "CL35": 21.0,
+    "CL30": 21.0,
+    "C68A": 19.4,
+    "C680": 19.4,
+    "C56X": 18.0,
+    "C25C": 15.5,
+    "C25B": 15.9,
+    "C25A": 14.3,
+    "E55P": 16.2,
+    "E50P": 12.3,
+    "PC24": 17.0,
+    "PC12": 16.3,
+    "BE20": 16.6,
+    "TBM9": 12.8,
+    "SR22": 11.7,
+    "SR20": 11.7,
+    "DA40": 11.9,
+    "DA42": 13.4,
+    "C172": 11.0,
+    "A210": 9.1,
+    "EC45": 11.0,
+    "EC35": 10.2,
+    "A139": 13.8,
+}
 
 # Estimated characteristic aircraft size (wingspan/length) per ADS-B emitter category
 _CATEGORY_SIZE_M: dict[str, float] = {
@@ -87,6 +178,16 @@ def _haversine_km(lat1_deg: float, lon1_deg: float, lat2_deg: float, lon2_deg: f
     return (EARTH_MEAN_RADIUS_M * c) / 1000.0
 
 
+def _wgs84_radii(lat_rad: float) -> tuple[float, float]:
+    """Return WGS-84 meridional (M) and prime-vertical (N) radii of curvature in meters."""
+    sin_lat = math.sin(lat_rad)
+    w2 = 1.0 - WGS84_E2 * sin_lat * sin_lat
+    w = math.sqrt(w2)
+    m_rad = WGS84_A * (1.0 - WGS84_E2) / (w2 * w)
+    n_rad = WGS84_A / w
+    return m_rad, n_rad
+
+
 def aircraft_altaz(
     obs_lat: float,
     obs_lon: float,
@@ -147,6 +248,13 @@ def angular_separation_deg(
     return math.degrees(math.atan2(num, den))
 
 
+def _damped_turn_offset_deg(track_rate_deg_s: float, dt_s: float) -> float:
+    if abs(track_rate_deg_s) <= 1e-4 or abs(dt_s) <= 1e-6:
+        return 0.0
+    sign = 1.0 if dt_s >= 0.0 else -1.0
+    return sign * track_rate_deg_s * TURN_DAMPING_TAU_S * (1.0 - math.exp(-abs(dt_s) / TURN_DAMPING_TAU_S))
+
+
 def extrapolate_position(
     lat_deg: float,
     lon_deg: float,
@@ -155,39 +263,76 @@ def extrapolate_position(
     track_deg: float,
     vertical_rate_fpm: float,
     dt_s: float,
+    track_rate_deg_s: float = 0.0,
 ) -> tuple[float, float, float]:
-    """Project aircraft position (lat, lon, alt_m) forward by dt_s seconds along a great circle."""
+    """Project aircraft position (lat, lon, alt_m) forward by dt_s seconds on WGS-84."""
     new_alt_m = max(0.0, alt_m + vertical_rate_fpm * FPM_TO_MPS * dt_s)
     dist_m = ground_speed_kt * KNOTS_TO_MPS * dt_s
     if abs(dist_m) < 1e-6:
         return lat_deg, lon_deg, new_alt_m
 
-    angular_dist = dist_m / EARTH_MEAN_RADIUS_M
-    bearing = math.radians(track_deg)
-    lat1 = math.radians(lat_deg)
-    lon1 = math.radians(lon_deg)
+    if abs(lat_deg) > 85.0:
+        # Polar fallback using spherical trigonometry
+        angular_dist = dist_m / (EARTH_MEAN_RADIUS_M + 0.5 * (alt_m + new_alt_m))
+        bearing = math.radians(track_deg + _damped_turn_offset_deg(track_rate_deg_s, 0.5 * dt_s))
+        lat1 = math.radians(lat_deg)
+        lon1 = math.radians(lon_deg)
+        sin_lat1, cos_lat1 = math.sin(lat1), math.cos(lat1)
+        sin_ad, cos_ad = math.sin(angular_dist), math.cos(angular_dist)
+        sin_lat2 = max(-1.0, min(1.0, sin_lat1 * cos_ad + cos_lat1 * sin_ad * math.cos(bearing)))
+        lat2 = math.asin(sin_lat2)
+        lon2 = lon1 + math.atan2(math.sin(bearing) * sin_ad * cos_lat1, cos_ad - sin_lat1 * sin_lat2)
+        lon2_deg = (math.degrees(lon2) + 540.0) % 360.0 - 180.0
+        return math.degrees(lat2), lon2_deg, new_alt_m
 
-    sin_lat1 = math.sin(lat1)
-    cos_lat1 = math.cos(lat1)
-    sin_ad = math.sin(angular_dist)
-    cos_ad = math.cos(angular_dist)
+    # Second-order midpoint integration on the WGS-84 ellipsoid at flight altitude
+    lat1_rad = math.radians(lat_deg)
+    lon1_rad = math.radians(lon_deg)
+    h_mid = 0.5 * (alt_m + new_alt_m)
 
-    sin_lat2 = max(-1.0, min(1.0, sin_lat1 * cos_ad + cos_lat1 * sin_ad * math.cos(bearing)))
-    lat2 = math.asin(sin_lat2)
-    lon2 = lon1 + math.atan2(
-        math.sin(bearing) * sin_ad * cos_lat1,
-        cos_ad - sin_lat1 * sin_lat2,
-    )
-    lon2_deg = (math.degrees(lon2) + 540.0) % 360.0 - 180.0
-    return math.degrees(lat2), lon2_deg, new_alt_m
+    m1, n1 = _wgs84_radii(lat1_rad)
+    psi_quarter = math.radians(track_deg + _damped_turn_offset_deg(track_rate_deg_s, 0.25 * dt_s))
+    dlat_half = (0.5 * dist_m * math.cos(psi_quarter)) / (m1 + alt_m)
+    lat_mid = max(math.radians(-89.9), min(math.radians(89.9), lat1_rad + dlat_half))
+
+    m_mid, n_mid = _wgs84_radii(lat_mid)
+    psi_mid = math.radians(track_deg + _damped_turn_offset_deg(track_rate_deg_s, 0.5 * dt_s))
+    dlat = (dist_m * math.cos(psi_mid)) / (m_mid + h_mid)
+    dlon = (dist_m * math.sin(psi_mid)) / ((n_mid + h_mid) * math.cos(lat_mid))
+
+    lat2_deg = math.degrees(max(math.radians(-90.0), min(math.radians(90.0), lat1_rad + dlat)))
+    lon2_deg = (math.degrees(lon1_rad + dlon) + 540.0) % 360.0 - 180.0
+    return lat2_deg, lon2_deg, new_alt_m
 
 
-def estimate_aircraft_angular_size_deg(slant_range_km: float, category: str | None) -> float:
+def estimate_aircraft_angular_size_deg(
+    slant_range_km: float,
+    category: str | None,
+    aircraft_type: str | None = None,
+) -> float:
     """Estimate the apparent angular span of an aircraft in the sky in degrees."""
     if slant_range_km <= 0.0:
         return 0.0
-    size_m = _CATEGORY_SIZE_M.get((category or "").strip().upper(), _DEFAULT_AIRCRAFT_SIZE_M)
+    type_key = (aircraft_type or "").strip().upper()
+    if type_key in _ICAO_TYPE_WINGSPAN_M:
+        size_m = _ICAO_TYPE_WINGSPAN_M[type_key]
+    else:
+        size_m = _CATEGORY_SIZE_M.get((category or "").strip().upper(), _DEFAULT_AIRCRAFT_SIZE_M)
     return math.degrees(2.0 * math.atan(size_m / (2.0 * slant_range_km * 1000.0)))
+
+
+def classify_visual_visibility(
+    plane_angular_size_deg: float,
+    moon_illumination_pct: float = 50.0,
+) -> tuple[str, str]:
+    """Classify whether a transit is visible to the naked eye or requires optics."""
+    arcmin = max(0.0, plane_angular_size_deg * 60.0)
+    naked_thresh = 2.8 if moon_illumination_pct >= 80.0 else 2.2
+    if arcmin >= naked_thresh:
+        return "NAKED_EYE", f"Naked eye ({arcmin:.1f}')"
+    if arcmin >= 1.2:
+        return "BINOCULARS", f"Binoculars / zoom ({arcmin:.1f}')"
+    return "TELESCOPE", f"Telescope / telephoto only ({arcmin:.1f}')"
 
 
 def _altaz_to_unit(alt_deg: float, az_deg: float) -> tuple[float, float, float]:

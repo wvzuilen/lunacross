@@ -16,6 +16,7 @@ class Config:
     latitude: float = 52.3731
     longitude: float = 4.8926
     elevation_m: float = 2.0
+    geoid_undulation_m: float = 0.0
     adsb_url: str = "http://localhost:8090/data/aircraft.json"
     supplement_url: str | None = None
     supplement_radius_nm: float = 45.0
@@ -38,6 +39,7 @@ class Config:
     pushover_events: str = "INCOMING,TRANSIT"
     pushover_max_lead_s: float = 60.0
     pushover_margin_deg: float = 0.25
+    pushover_min_angular_arcmin: float = 0.0
     ephemeris_dir: str = ".cache/skyfield"
     top_n: int = 12
     web_port: int = 0

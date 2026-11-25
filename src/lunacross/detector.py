@@ -290,6 +290,7 @@ class TransitDetector:
                 ac.track_deg,
                 ac.vertical_rate_fpm,
                 dt_dead_reckon,
+                track_rate_deg_s=ac.track_rate_deg_s,
             )
         return ac.lat, ac.lon, ac.altitude_m
 
@@ -320,13 +321,15 @@ class TransitDetector:
                 ac.track_deg,  # type: ignore[arg-type]
                 ac.vertical_rate_fpm,
                 t_s,
+                track_rate_deg_s=ac.track_rate_deg_s,
             )
             sky = aircraft_altaz(self.obs_lat, self.obs_lon, self.obs_alt_m, plat, plon, palt)
+            m_alt, m_az = moon.at_offset(t_s)
             sep = angular_separation_deg(
                 sky.altitude_deg,
                 sky.azimuth_deg,
-                moon.altitude_deg,
-                moon.azimuth_deg,
+                m_alt,
+                m_az,
             )
             return sep, sky.altitude_deg
 
@@ -651,7 +654,11 @@ class TransitDetector:
                         )
             self._prev_sky[ac.hex] = (current_utc, sky_pos, ac.altitude_ft)
 
-            plane_ang = estimate_aircraft_angular_size_deg(sky_pos.slant_range_km, ac.category)
+            plane_ang = estimate_aircraft_angular_size_deg(
+                sky_pos.slant_range_km,
+                ac.category,
+                ac.aircraft_type,
+            )
             disk_threshold = moon.angular_radius_deg + plane_ang / 2.0
             alert_threshold = moon.angular_radius_deg + self.alert_margin_deg
             effective_sep = interp_sep_deg if (interp_sep_deg is not None and interp_sep_deg < sep_deg) else sep_deg

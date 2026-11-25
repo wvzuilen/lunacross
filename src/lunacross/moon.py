@@ -1,4 +1,4 @@
-"""Topocentric Moon position calculation using Skyfield."""
+"""Topocentric Moon position and instantaneous angular velocity using Skyfield."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from skyfield import almanac
 from skyfield.api import Loader, wgs84
 
 MOON_RADIUS_KM = 1737.4
+_VELOCITY_STEP_S = 10.0
 
 _COMPASS_POINTS = (
     "N",
@@ -60,7 +61,7 @@ def moon_phase_name(phase_deg: float) -> str:
 
 @dataclass(frozen=True, slots=True)
 class MoonPosition:
-    """Topocentric position and physical appearance of the Moon at an instant."""
+    """Topocentric position, angular size, and sky drift rate of the Moon at an instant."""
 
     timestamp_utc: datetime
     altitude_deg: float
@@ -72,6 +73,14 @@ class MoonPosition:
     phase_deg: float
     phase_name: str
     is_above_horizon: bool
+    alt_rate_deg_s: float = 0.0
+    az_rate_deg_s: float = 0.0
+
+    def at_offset(self, dt_s: float) -> tuple[float, float]:
+        """Return predicted (altitude_deg, azimuth_deg) of the Moon dt_s seconds later."""
+        alt = max(-90.0, min(90.0, self.altitude_deg + self.alt_rate_deg_s * dt_s))
+        az = (self.azimuth_deg + self.az_rate_deg_s * dt_s) % 360.0
+        return alt, az
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +100,7 @@ def _ensure_utc(dt: datetime | None) -> datetime:
 
 
 class MoonTracker:
-    """Computes apparent Moon position, angular size, illumination, and rise/set times."""
+    """Computes apparent Moon position, angular size, drift velocity, illumination, and rise/set."""
 
     def __init__(
         self,
@@ -99,10 +108,13 @@ class MoonTracker:
         longitude: float,
         elevation_m: float = 0.0,
         ephemeris_dir: str | Path = ".cache/skyfield",
+        *,
+        geoid_undulation_m: float = 0.0,
     ) -> None:
         self.latitude = latitude
         self.longitude = longitude
         self.elevation_m = elevation_m
+        self.geoid_undulation_m = geoid_undulation_m
 
         loader = Loader(str(ephemeris_dir))
         self.ts = loader.timescale()
@@ -110,16 +122,24 @@ class MoonTracker:
         self.earth = self.eph["earth"]
         self.moon = self.eph["moon"]
         self.sun = self.eph["sun"]
-        self.topos = wgs84.latlon(latitude, longitude, elevation_m=elevation_m)
+        self.topos = wgs84.latlon(
+            latitude,
+            longitude,
+            elevation_m=elevation_m + geoid_undulation_m,
+        )
         self.observer = self.earth + self.topos
 
     def get_position(self, dt: datetime | None = None) -> MoonPosition:
-        """Compute apparent topocentric altitude, azimuth, and angular diameter of the Moon."""
+        """Compute apparent topocentric altitude, azimuth, drift rate, and diameter of the Moon."""
         dt_utc = _ensure_utc(dt)
         t = self.ts.from_datetime(dt_utc)
+        t_next = self.ts.from_datetime(dt_utc + timedelta(seconds=_VELOCITY_STEP_S))
 
         apparent = self.observer.at(t).observe(self.moon).apparent()
         alt, az, distance = apparent.altaz("standard")
+
+        apparent_next = self.observer.at(t_next).observe(self.moon).apparent()
+        alt_next, az_next, _ = apparent_next.altaz("standard")
 
         dist_km = float(distance.km)
         angular_radius_deg = math.degrees(math.asin(min(1.0, MOON_RADIUS_KM / dist_km)))
@@ -127,6 +147,10 @@ class MoonTracker:
         phase_deg = float(almanac.moon_phase(self.eph, t).degrees) % 360.0
         alt_deg = float(alt.degrees)
         az_deg = float(az.degrees) % 360.0
+
+        alt_rate = (float(alt_next.degrees) - alt_deg) / _VELOCITY_STEP_S
+        d_az = ((float(az_next.degrees) - az_deg + 180.0) % 360.0) - 180.0
+        az_rate = d_az / _VELOCITY_STEP_S
 
         return MoonPosition(
             timestamp_utc=dt_utc,
@@ -139,6 +163,8 @@ class MoonTracker:
             phase_deg=phase_deg,
             phase_name=moon_phase_name(phase_deg),
             is_above_horizon=alt_deg > 0.0,
+            alt_rate_deg_s=alt_rate,
+            az_rate_deg_s=az_rate,
         )
 
     def next_rise_set(self, dt: datetime | None = None) -> MoonRiseSet:

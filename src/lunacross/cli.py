@@ -228,8 +228,22 @@ def _sync_receiver_if_requested(cfg: Config, sync_receiver: bool) -> Config:
     return cfg
 
 
+def _obs_hae_m(cfg: Config) -> float:
+    return cfg.elevation_m + cfg.geoid_undulation_m
+
+
+def _make_moon_tracker(cfg: Config) -> MoonTracker:
+    return MoonTracker(
+        cfg.latitude,
+        cfg.longitude,
+        cfg.elevation_m,
+        cfg.ephemeris_dir,
+        geoid_undulation_m=cfg.geoid_undulation_m,
+    )
+
+
 def _cmd_moon(cfg: Config) -> int:
-    tracker = MoonTracker(cfg.latitude, cfg.longitude, cfg.elevation_m, cfg.ephemeris_dir)
+    tracker = _make_moon_tracker(cfg)
     now = datetime.now(timezone.utc)
     moon = tracker.get_position(now)
     rise_set = tracker.next_rise_set(now)
@@ -245,11 +259,12 @@ def _make_adsb_client(cfg: Config) -> AdsbClient:
         observer_lon=cfg.longitude,
         supplement_radius_nm=cfg.supplement_radius_nm,
         supplement_interval_s=cfg.supplement_interval_s,
+        geoid_undulation_m=cfg.geoid_undulation_m,
     )
 
 
 def _cmd_check(cfg: Config) -> int:
-    tracker = MoonTracker(cfg.latitude, cfg.longitude, cfg.elevation_m, cfg.ephemeris_dir)
+    tracker = _make_moon_tracker(cfg)
     now = datetime.now(timezone.utc)
     moon = tracker.get_position(now)
     rise_set = tracker.next_rise_set(now)
@@ -257,7 +272,7 @@ def _cmd_check(cfg: Config) -> int:
     detector = TransitDetector(
         obs_lat=cfg.latitude,
         obs_lon=cfg.longitude,
-        obs_alt_m=cfg.elevation_m,
+        obs_alt_m=_obs_hae_m(cfg),
         alert_margin_deg=cfg.alert_margin_deg,
         predict_horizon_s=cfg.predict_horizon_s,
         min_moon_alt_deg=cfg.min_moon_alt_deg,
@@ -288,11 +303,11 @@ def _cmd_check(cfg: Config) -> int:
 
 
 def _cmd_monitor(cfg: Config) -> int:
-    tracker = MoonTracker(cfg.latitude, cfg.longitude, cfg.elevation_m, cfg.ephemeris_dir)
+    tracker = _make_moon_tracker(cfg)
     detector = TransitDetector(
         obs_lat=cfg.latitude,
         obs_lon=cfg.longitude,
-        obs_alt_m=cfg.elevation_m,
+        obs_alt_m=_obs_hae_m(cfg),
         alert_margin_deg=cfg.alert_margin_deg,
         predict_horizon_s=cfg.predict_horizon_s,
         min_moon_alt_deg=cfg.min_moon_alt_deg,
@@ -311,6 +326,7 @@ def _cmd_monitor(cfg: Config) -> int:
         pushover_sound=cfg.pushover_sound,
         pushover_priority=cfg.pushover_priority,
         pushover_events=cfg.pushover_events,
+        pushover_min_angular_arcmin=cfg.pushover_min_angular_arcmin,
         adsb_url=cfg.adsb_url,
     )
 
@@ -468,7 +484,7 @@ def _cmd_test_pushover(cfg: Config) -> int:
         )
         return 1
 
-    tracker = MoonTracker(cfg.latitude, cfg.longitude, cfg.elevation_m, cfg.ephemeris_dir)
+    tracker = _make_moon_tracker(cfg)
     moon = tracker.get_position()
     notifier = TransitNotifier(
         log_file=None,
@@ -517,13 +533,13 @@ def _cmd_render(
     output: Path | None = None,
 ) -> int:
     if live:
-        tracker = MoonTracker(cfg.latitude, cfg.longitude, cfg.elevation_m, cfg.ephemeris_dir)
+        tracker = _make_moon_tracker(cfg)
         now = datetime.now(timezone.utc)
         moon = tracker.get_position(now)
         detector = TransitDetector(
             obs_lat=cfg.latitude,
             obs_lon=cfg.longitude,
-            obs_alt_m=cfg.elevation_m,
+            obs_alt_m=_obs_hae_m(cfg),
             alert_margin_deg=cfg.alert_margin_deg,
             predict_horizon_s=cfg.predict_horizon_s,
             min_moon_alt_deg=cfg.min_moon_alt_deg,
@@ -599,7 +615,7 @@ def _cmd_simulate(
     send_pushover: bool = False,
     render_path: Path | None = None,
 ) -> int:
-    tracker = MoonTracker(cfg.latitude, cfg.longitude, cfg.elevation_m, cfg.ephemeris_dir)
+    tracker = _make_moon_tracker(cfg)
     now = datetime.now(timezone.utc)
     moon = tracker.get_position(now)
 
@@ -625,10 +641,11 @@ def _cmd_simulate(
     # Place a synthetic aircraft at 35,000 ft directly on the line of sight to the Moon
     import math
 
+    obs_hae = _obs_hae_m(cfg)
     alt_ft = 35000.0
     alt_m = alt_ft * 0.3048
     alt_rad = math.radians(moon.altitude_deg)
-    ground_dist_m = (alt_m - cfg.elevation_m) / math.tan(alt_rad)
+    ground_dist_m = (alt_m - obs_hae) / math.tan(alt_rad)
     # Ground point from observer along the Moon's azimuth:
     cross_lat, cross_lon, _ = extrapolate_position(
         cfg.latitude,
@@ -657,7 +674,7 @@ def _cmd_simulate(
     detector = TransitDetector(
         obs_lat=cfg.latitude,
         obs_lon=cfg.longitude,
-        obs_alt_m=cfg.elevation_m,
+        obs_alt_m=obs_hae,
         alert_margin_deg=cfg.alert_margin_deg,
         predict_horizon_s=cfg.predict_horizon_s,
         min_moon_alt_deg=0.0,
