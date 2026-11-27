@@ -16,12 +16,12 @@ A Python tool that computes the exact apparent position of the Moon from your lo
 ## UI Preview
 
 ### Live Sky View
-*Example using demo coordinates (`52.3731° N, 4.8926° E`): real-time observer horizon, Moon phase, solid observed tracks, and 60s dashed flight path predictions.*
+*Example using demo coordinates (`52.3731° N, 4.8926° E`): 4-card live status bar (Moon, METAR sky/weather, ADS-B feed, closest aircraft), real-time observer horizon with realistic topocentric Moon phase & maria preview, `+120s` dashed flight path predictions with direction arrows, and the live Closest Aircraft table.*
 
 ![LunaCross Live Sky View](docs/ui-live-sky.png)
 
 ### Pass Replay
-*Post-hoc visualization of a simulated lunar transit (`KLM999`), showing both the wide horizon perspective and the zoomed lunar inset.*
+*Recorded Passes tab with pagination, `Transit + Near miss` default filter, highlighted row selection, and post-hoc Pass Replay of a simulated lunar transit (`KLM999`).*
 
 ![LunaCross Pass Replay](docs/ui-pass-replay.png)
 
@@ -82,7 +82,10 @@ uv run lunacross --config config.toml monitor
 
 ## Pushover Notifications
 
-Receive instant Pushover alerts when an aircraft is on course to cross the Moon (`INCOMING`, up to 120s ahead) and/or while it is crossing (`TRANSIT`), complete with a clickable link to that aircraft on your local `tar1090` radar.
+Receive instant Pushover alerts when an aircraft is on course to cross the Moon (`INCOMING`, configurable lead time via `pushover_max_lead_s`) and/or while it is crossing (`TRANSIT`), complete with estimated visual visibility (`Naked eye`, `Binoculars / zoom`, or `Telescope / telephoto only`), live sky conditions, and a clickable link to that aircraft on your local `tar1090` radar.
+
+- **Cloud-cover & quiet-hours filtering**: set `pushover_max_cloud_cover_pct` (default `85.0`) to suppress Pushover alerts under overcast skies or fog, and optionally `pushover_quiet_hours = "23:30-07:00"` for overnight quiet hours (all events are still recorded in `transits.jsonl` and `passes.jsonl`).
+- **Optional size filter**: set `pushover_min_angular_arcmin` (e.g. `2.0`) to only alert on larger or closer aircraft.
 
 1. Set `pushover_app_token` and `pushover_user_key` in `config.toml` (or via `LUNACROSS_PUSHOVER_APP_TOKEN` and `LUNACROSS_PUSHOVER_USER_KEY`).
 2. Test delivery:
@@ -96,7 +99,7 @@ Receive instant Pushover alerts when an aircraft is on course to cross the Moon 
 
 ## Sky Visualization & Web UI
 
-Generate an observer-perspective sky chart (horizon, compass ticks, Moon phase, aircraft path, and zoomed lunar inset) directly from the CLI:
+Generate an observer-perspective sky chart (horizon, compass ticks, topocentric Moon phase with lunar maria, aircraft path, and zoomed lunar inset) directly from the CLI:
 
 ```bash
 # List all recorded close passes
@@ -112,7 +115,7 @@ uv run lunacross render --live -o live_sky.html
 uv run lunacross simulate --render sim_transit.html
 ```
 
-To enable the built-in real-time Web UI (with auto-refreshing **Live Sky View** and **Recorded Passes** replay), set `web_port = 8091` in `config.toml` (or pass `--web-port 8091`), then open `http://<server-ip>:8091`.
+To enable the built-in real-time Web UI (with auto-refreshing **Live Sky View**, live **Closest Aircraft** table, and paginated/filterable **Recorded Passes** replay), set `web_port = 8091` in `config.toml` (or pass `--web-port 8091`), then open `http://<server-ip>:8091`. Older `CLOSE_PASS` records are pruned automatically according to `close_pass_retention_days` (default `7` days), while `TRANSIT` and `NEAR_MISS` records are kept permanently.
 
 ## Docker (24/7 Server Deployment)
 
