@@ -29,6 +29,7 @@ class Config:
     max_seen_pos_s: float = 30.0
     log_file: str = "transits.jsonl"
     passes_file: str = "passes.jsonl"
+    close_pass_retention_days: int = 7
     notify_macos: bool = True
     webhook_url: str | None = None
     pushover_app_token: str | None = None

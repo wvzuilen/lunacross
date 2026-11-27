@@ -92,10 +92,11 @@ _INDEX_HTML = """<!DOCTYPE html>
           <span>Recorded close passes from <strong>passes.jsonl</strong> (newest first)</span>
         </div>
         <div class="filter-group" id="pass-filters">
-          <button class="filter-btn active" data-filter="ALL" onclick="setPassFilter('ALL')">All</button>
+          <button class="filter-btn active" data-filter="HIGHLIGHTS" onclick="setPassFilter('HIGHLIGHTS')">Transit + Near miss</button>
           <button class="filter-btn" data-filter="TRANSIT" onclick="setPassFilter('TRANSIT')">Transit</button>
           <button class="filter-btn" data-filter="NEAR_MISS" onclick="setPassFilter('NEAR_MISS')">Near miss</button>
           <button class="filter-btn" data-filter="CLOSE_PASS" onclick="setPassFilter('CLOSE_PASS')">Close pass</button>
+          <button class="filter-btn" data-filter="ALL" onclick="setPassFilter('ALL')">All</button>
         </div>
       </div>
       <table>
@@ -167,13 +168,16 @@ async function refreshLive() {
 }
 
 let allPasses = [];
-let passFilter = 'ALL';
+let passFilter = 'HIGHLIGHTS';
 let pageSize = 15;
 let currentPage = 1;
 let selectedPassId = null;
 
 function filteredPasses() {
   if (passFilter === 'ALL') return allPasses;
+  if (passFilter === 'HIGHLIGHTS') {
+    return allPasses.filter(p => p.classification === 'TRANSIT' || p.classification === 'NEAR_MISS');
+  }
   return allPasses.filter(p => p.classification === passFilter);
 }
 

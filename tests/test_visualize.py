@@ -11,7 +11,7 @@ from lunacross.config import Config
 from lunacross.detector import AircraftSighting, PassPoint, PassRecord
 from lunacross.geometry import SkyPosition
 from lunacross.moon import MoonPosition
-from lunacross.notifier import TransitNotifier, load_passes
+from lunacross.notifier import TransitNotifier, load_passes, prune_old_close_passes
 from lunacross.visualize import (
     render_live_snapshot_svg,
     render_pass_html,
@@ -208,6 +208,7 @@ def test_web_server_endpoints(tmp_path) -> None:
         assert "LunaCross" in r_idx.text
         assert "passes-pagination" in r_idx.text
         assert "tr.pass-row.selected" in r_idx.text
+        assert 'data-filter="HIGHLIGHTS"' in r_idx.text
 
         r_live = httpx.get(f"{base}/api/live.json")
         assert r_live.status_code == 200
@@ -226,3 +227,26 @@ def test_web_server_endpoints(tmp_path) -> None:
         assert "KLM999" in r_psvg.text
     finally:
         server.stop()
+
+
+def test_prune_old_close_passes_retention(tmp_path) -> None:
+    from dataclasses import replace
+
+    passes_path = tmp_path / "passes.jsonl"
+    notifier = TransitNotifier(log_file=None, passes_file=passes_path, notify_macos=False)
+    base = _sample_pass_record()
+
+    old_transit = replace(base, pass_id="old_transit", classification="TRANSIT", closest_utc="2026-10-01T12:00:00+00:00")
+    old_near = replace(base, pass_id="old_near", classification="NEAR_MISS", closest_utc="2026-10-01T12:00:00+00:00")
+    old_close = replace(base, pass_id="old_close", classification="CLOSE_PASS", closest_utc="2026-11-10T12:00:00+00:00")
+    recent_close = replace(base, pass_id="recent_close", classification="CLOSE_PASS", closest_utc="2026-11-25T12:00:00+00:00")
+
+    for rec in (old_transit, old_near, old_close, recent_close):
+        notifier.write_pass(rec)
+
+    now = datetime(2026, 11, 27, 12, 0, 0, tzinfo=timezone.utc)
+    removed = prune_old_close_passes(passes_path, retention_days=7, now_utc=now)
+    assert removed == 1
+
+    remaining_ids = [r.pass_id for r in load_passes(passes_path)]
+    assert remaining_ids == ["old_transit", "old_near", "recent_close"]

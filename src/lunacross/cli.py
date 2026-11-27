@@ -23,7 +23,7 @@ from lunacross.config import Config, load_config
 from lunacross.detector import AircraftSighting, SightingStatus, TransitDetector, TransitEvent
 from lunacross.geometry import KNOTS_TO_MPS, extrapolate_position
 from lunacross.moon import MoonPosition, MoonRiseSet, MoonTracker, compass_direction
-from lunacross.notifier import TransitNotifier, load_passes
+from lunacross.notifier import TransitNotifier, load_passes, prune_old_close_passes
 from lunacross.visualize import (
     render_live_snapshot_html,
     render_live_snapshot_svg,
@@ -351,11 +351,28 @@ def _cmd_monitor(cfg: Config) -> int:
     cached_rise_set: MoonRiseSet | None = None
     last_rise_set_at: datetime | None = None
     last_heartbeat_at: datetime | None = None
+    last_prune_at: datetime | None = None
     first_non_tty_print = True
+
+    def maybe_prune_passes(now_dt: datetime) -> None:
+        nonlocal last_prune_at
+        if cfg.close_pass_retention_days <= 0 or not cfg.passes_file:
+            return
+        if last_prune_at is None or (now_dt - last_prune_at) >= timedelta(hours=6):
+            pruned = prune_old_close_passes(
+                cfg.passes_file, cfg.close_pass_retention_days, now_utc=now_dt
+            )
+            last_prune_at = now_dt
+            if pruned > 0 and not console.is_terminal:
+                ts = now_dt.astimezone().strftime("%H:%M:%S")
+                console.print(
+                    f"[{ts}] Pruned {pruned} CLOSE_PASS record(s) older than {cfg.close_pass_retention_days}d."
+                )
 
     def poll_once() -> tuple[MoonPosition, MoonRiseSet, list[AircraftSighting], list[TransitEvent], int, str]:
         nonlocal cached_rise_set, last_rise_set_at
         now = datetime.now(timezone.utc)
+        maybe_prune_passes(now)
         moon = tracker.get_position(now)
         if (
             cached_rise_set is None

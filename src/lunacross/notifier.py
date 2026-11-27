@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -48,6 +49,50 @@ def load_passes(passes_file: str | Path) -> list[PassRecord]:
             except Exception:
                 continue
     return records
+
+
+def prune_old_close_passes(
+    passes_file: str | Path,
+    retention_days: int,
+    *,
+    now_utc: datetime | None = None,
+) -> int:
+    """Remove CLOSE_PASS records older than retention_days; always keep TRANSIT & NEAR_MISS."""
+    if retention_days <= 0:
+        return 0
+    path = Path(passes_file)
+    if not path.is_file():
+        return 0
+
+    cutoff = (now_utc or datetime.now(timezone.utc)) - timedelta(days=retention_days)
+    kept_lines: list[str] = []
+    removed = 0
+
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                data = json.loads(stripped)
+                if data.get("classification") == "CLOSE_PASS":
+                    closest_dt = datetime.fromisoformat(str(data["closest_utc"]))
+                    if closest_dt.tzinfo is None:
+                        closest_dt = closest_dt.replace(tzinfo=timezone.utc)
+                    if closest_dt < cutoff:
+                        removed += 1
+                        continue
+            except Exception:
+                pass
+            kept_lines.append(stripped)
+
+    if removed > 0:
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            for line in kept_lines:
+                fh.write(line + "\n")
+        os.replace(tmp_path, path)
+    return removed
 
 
 class TransitNotifier:

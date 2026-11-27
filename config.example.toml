@@ -24,7 +24,7 @@ poll_interval_s = 1.0
 alert_margin_deg = 0.5
 
 # Angular radius (degrees) from Moon center to record complete close-pass tracks
-log_margin_deg = 5.0
+log_margin_deg = 2.0
 
 # Lookahead horizon in seconds for flight path prediction
 predict_horizon_s = 120.0
@@ -40,6 +40,8 @@ log_file = "transits.jsonl"
 
 # JSONL file storing full trajectory records for every pass within log_margin_deg
 passes_file = "passes.jsonl"
+# Automatically prune CLOSE_PASS records older than N days (0 = keep forever; TRANSIT & NEAR_MISS are always kept)
+close_pass_retention_days = 7
 
 # Show macOS Notification Center alerts on transit or incoming transit
 notify_macos = true
