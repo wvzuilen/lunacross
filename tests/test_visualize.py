@@ -168,6 +168,12 @@ def test_render_live_snapshot_svg() -> None:
     assert "<svg" in svg
     assert "KLM999" in svg
     assert "HORIZON (0°)" in svg
+    assert "+120s forecast" in svg
+
+    svg_90 = render_live_snapshot_svg(
+        moon, [sighting], {"484161": _sample_pass_record().track}, Config(predict_horizon_s=90.0)
+    )
+    assert "+90s forecast" in svg_90
 
 
 def test_web_server_endpoints(tmp_path) -> None:

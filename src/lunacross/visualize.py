@@ -479,11 +479,12 @@ def render_live_snapshot_svg(
     tracks: dict[str, list[PassPoint]],
     cfg: Config,
     *,
-    predict_s: float = 60.0,
+    predict_s: float | None = None,
     width: int = 1120,
     height: int = 540,
 ) -> str:
     """Render an observer-perspective live sky SVG with horizon, Moon, and aircraft routes."""
+    forecast_s = max(0.0, cfg.predict_horizon_s if predict_s is None else predict_s)
     uid = "ll"
     header_h = 54.0
     pad = 16.0
@@ -553,9 +554,9 @@ def render_live_snapshot_svg(
             )
 
         # Future trajectory (dashed)
-        if ac.ground_speed_kt and ac.track_deg is not None and ac.ground_speed_kt > 20.0:
+        if forecast_s > 0.0 and ac.ground_speed_kt and ac.track_deg is not None and ac.ground_speed_kt > 20.0:
             fut_coords: list[tuple[float, float, float]] = [(s.sky_pos.altitude_deg, s.sky_pos.azimuth_deg, 0.0)]
-            for step in range(5, int(predict_s) + 1, 5):
+            for step in range(5, int(forecast_s) + 1, 5):
                 plat, plon, palt = extrapolate_position(
                     ac.lat,
                     ac.lon,
@@ -607,7 +608,7 @@ def render_live_snapshot_svg(
     moon_lbl = f"Moon ({moon.altitude_deg:+.1f}° / {moon.azimuth_deg:.0f}° {compass_direction(moon.azimuth_deg)})"
     footer_lines = [
         f"Moon: {moon.phase_name} ({moon.illumination_pct:.1f}% lit, Ø {moon.angular_diameter_deg:.3f}°)",
-        f"Solid = observed track | Dashed = +{predict_s:.0f}s forecast",
+        f"Solid = observed track | Dashed = +{forecast_s:.0f}s forecast",
     ]
 
     return "\n".join(
@@ -699,7 +700,7 @@ def render_live_snapshot_html(
     tracks: dict[str, list[PassPoint]],
     cfg: Config,
     *,
-    predict_s: float = 60.0,
+    predict_s: float | None = None,
 ) -> str:
     """Wrap a rendered live sky SVG in a standalone HTML document."""
     return _wrap_html(
