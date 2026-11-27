@@ -206,6 +206,8 @@ def test_web_server_endpoints(tmp_path) -> None:
         r_idx = httpx.get(f"{base}/")
         assert r_idx.status_code == 200
         assert "LunaCross" in r_idx.text
+        assert "passes-pagination" in r_idx.text
+        assert "tr.pass-row.selected" in r_idx.text
 
         r_live = httpx.get(f"{base}/api/live.json")
         assert r_live.status_code == 200

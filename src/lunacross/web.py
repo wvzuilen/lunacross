@@ -37,8 +37,23 @@ _INDEX_HTML = """<!DOCTYPE html>
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #1e293b; }
   th { color: #94a3b8; font-weight: 600; }
-  tr.pass-row { cursor: pointer; }
+  tr.pass-row { cursor: pointer; transition: background-color 0.12s ease; }
   tr.pass-row:hover { background: #1e293b; }
+  tr.pass-row.selected { background: #172554; }
+  tr.pass-row.selected:hover { background: #1e3a8a; }
+  tr.pass-row.selected td:first-child { box-shadow: inset 3px 0 0 #38bdf8; }
+  tr.pass-row.selected td { color: #f8fafc; }
+  .passes-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .filter-group { display: flex; gap: 6px; flex-wrap: wrap; }
+  .filter-btn { background: #0f172a; color: #94a3b8; border: 1px solid #334155; padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  .filter-btn:hover { background: #1e293b; color: #e2e8f0; }
+  .filter-btn.active { background: #1e293b; color: #f8fafc; border-color: #38bdf8; }
+  .pagination { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: #94a3b8; }
+  .pagination-controls { display: flex; align-items: center; gap: 6px; }
+  .page-btn { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; padding: 5px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  .page-btn:hover:not(:disabled) { background: #334155; }
+  .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .page-select { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; padding: 4px 8px; border-radius: 6px; font-size: 12px; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
   .badge-TRANSIT { background: #7f1d1d; color: #fecaca; }
   .badge-NEAR_MISS { background: #78350f; color: #fde68a; }
@@ -72,13 +87,39 @@ _INDEX_HTML = """<!DOCTYPE html>
 
   <section id="panel-passes" class="hidden">
     <div class="card">
-      <div class="meta"><span>Recorded close passes from <strong>passes.jsonl</strong> (newest first)</span></div>
+      <div class="passes-toolbar">
+        <div class="meta" style="margin-bottom:0;">
+          <span>Recorded close passes from <strong>passes.jsonl</strong> (newest first)</span>
+        </div>
+        <div class="filter-group" id="pass-filters">
+          <button class="filter-btn active" data-filter="ALL" onclick="setPassFilter('ALL')">All</button>
+          <button class="filter-btn" data-filter="TRANSIT" onclick="setPassFilter('TRANSIT')">Transit</button>
+          <button class="filter-btn" data-filter="NEAR_MISS" onclick="setPassFilter('NEAR_MISS')">Near miss</button>
+          <button class="filter-btn" data-filter="CLOSE_PASS" onclick="setPassFilter('CLOSE_PASS')">Close pass</button>
+        </div>
+      </div>
       <table>
         <thead>
           <tr><th>Closest (Local)</th><th>Flight</th><th>Class</th><th>Min Sep</th><th>Alt (ft)</th><th>Track pts</th></tr>
         </thead>
         <tbody id="passes-body"><tr><td colspan="6">Loading...</td></tr></tbody>
       </table>
+      <div class="pagination" id="passes-pagination">
+        <span id="passes-summary"></span>
+        <div class="pagination-controls">
+          <label for="page-size">Per page:</label>
+          <select id="page-size" class="page-select" onchange="setPageSize(this.value)">
+            <option value="15" selected>15</option>
+            <option value="25">25</option>
+            <option value="50">50</option>
+          </select>
+          <button id="btn-first" class="page-btn" onclick="goToPage(1)">First</button>
+          <button id="btn-prev" class="page-btn" onclick="goToPage(currentPage - 1)">Prev</button>
+          <span id="page-indicator" style="min-width:84px;text-align:center;">Page 1 / 1</span>
+          <button id="btn-next" class="page-btn" onclick="goToPage(currentPage + 1)">Next</button>
+          <button id="btn-last" class="page-btn" onclick="goToPage(totalPages())">Last</button>
+        </div>
+      </div>
     </div>
     <div id="pass-viewer" class="card hidden">
       <div id="pass-svg"></div>
@@ -125,17 +166,69 @@ async function refreshLive() {
   } catch (e) {}
 }
 
-async function loadPasses() {
-  const res = await fetch('/api/passes?_=' + Date.now());
-  const passes = await res.json();
+let allPasses = [];
+let passFilter = 'ALL';
+let pageSize = 15;
+let currentPage = 1;
+let selectedPassId = null;
+
+function filteredPasses() {
+  if (passFilter === 'ALL') return allPasses;
+  return allPasses.filter(p => p.classification === passFilter);
+}
+
+function totalPages() {
+  return Math.max(1, Math.ceil(filteredPasses().length / pageSize));
+}
+
+function setPassFilter(filter) {
+  passFilter = filter;
+  currentPage = 1;
+  document.querySelectorAll('#pass-filters .filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.filter === filter);
+  });
+  renderPassesPage();
+}
+
+function setPageSize(value) {
+  pageSize = Math.max(1, parseInt(value, 10) || 15);
+  currentPage = 1;
+  renderPassesPage();
+}
+
+function goToPage(page) {
+  const maxP = totalPages();
+  currentPage = Math.min(maxP, Math.max(1, page));
+  renderPassesPage();
+}
+
+function renderPassesPage() {
+  const items = filteredPasses();
   const tbody = document.getElementById('passes-body');
-  if (!passes.length) {
-    tbody.innerHTML = '<tr><td colspan="6">No close passes recorded yet.</td></tr>';
+  const summary = document.getElementById('passes-summary');
+  const maxP = totalPages();
+  if (currentPage > maxP) currentPage = maxP;
+
+  document.getElementById('page-indicator').textContent = `Page ${currentPage} / ${maxP}`;
+  document.getElementById('btn-first').disabled = currentPage <= 1;
+  document.getElementById('btn-prev').disabled = currentPage <= 1;
+  document.getElementById('btn-next').disabled = currentPage >= maxP;
+  document.getElementById('btn-last').disabled = currentPage >= maxP;
+
+  if (!items.length) {
+    summary.textContent = 'Showing 0 passes';
+    tbody.innerHTML = '<tr><td colspan="6">No matching passes found.</td></tr>';
     return;
   }
-  tbody.innerHTML = passes.map(p => {
+
+  const startIdx = (currentPage - 1) * pageSize;
+  const pageItems = items.slice(startIdx, startIdx + pageSize);
+  summary.textContent = `Showing ${startIdx + 1}–${startIdx + pageItems.length} of ${items.length} passes`;
+
+  tbody.innerHTML = pageItems.map(p => {
     const dt = new Date(p.closest_utc).toLocaleString();
-    return `<tr class="pass-row" onclick="viewPass('${p.pass_id}')">` +
+    const selClass = p.pass_id === selectedPassId ? ' selected' : '';
+    return `<tr class="pass-row${selClass}" data-pass-id="${p.pass_id}" onclick="viewPass('${p.pass_id}')">` +
       `<td>${dt}</td>` +
       `<td><strong>${p.flight}</strong></td>` +
       `<td><span class="badge badge-${p.classification}">${p.classification}</span></td>` +
@@ -146,14 +239,26 @@ async function loadPasses() {
   }).join('');
 }
 
+async function loadPasses() {
+  const res = await fetch('/api/passes?_=' + Date.now());
+  allPasses = await res.json();
+  renderPassesPage();
+}
+
 async function viewPass(passId) {
+  selectedPassId = passId;
+  document.querySelectorAll('#passes-body tr.pass-row').forEach(tr => {
+    tr.classList.toggle('selected', tr.dataset.passId === passId);
+  });
   const res = await fetch('/api/passes/' + encodeURIComponent(passId) + '.svg');
   if (!res.ok) return;
   document.getElementById('pass-svg').innerHTML = await res.text();
   document.getElementById('pass-dl-svg').href = '/api/passes/' + encodeURIComponent(passId) + '.svg';
   document.getElementById('pass-dl-svg').download = passId + '.svg';
   document.getElementById('pass-dl-json').href = '/api/passes/' + encodeURIComponent(passId) + '.json';
-  document.getElementById('pass-viewer').classList.remove('hidden');
+  const viewer = document.getElementById('pass-viewer');
+  viewer.classList.remove('hidden');
+  viewer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 refreshLive();
