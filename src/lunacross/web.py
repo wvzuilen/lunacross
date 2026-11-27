@@ -7,6 +7,7 @@ import threading
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -15,6 +16,7 @@ from lunacross.detector import AircraftSighting, PassPoint, PassRecord
 from lunacross.moon import MoonPosition
 from lunacross.notifier import load_passes
 from lunacross.visualize import render_live_snapshot_svg, render_pass_svg
+from lunacross.weather import WeatherSnapshot
 
 _INDEX_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -155,8 +157,13 @@ async function refreshLive() {
       const m = data.moon;
       const meta = document.getElementById('live-meta');
       if (m) {
+        const wx = data.weather;
+        const wxHtml = wx
+          ? `<span>Sky: <strong>${wx.condition_label}</strong> (${wx.temperature_c.toFixed(1)}°C, ${wx.pressure_msl_hpa.toFixed(0)} hPa)</span>`
+          : '';
         meta.innerHTML =
           `<span>Moon: <strong>${m.altitude_deg.toFixed(1)}° alt / ${m.azimuth_deg.toFixed(1)}° az</strong> (${m.phase_name}, ${m.illumination_pct.toFixed(1)}%)</span>` +
+          wxHtml +
           `<span>Feed: <strong>${data.feed_ok ? 'Live connected' : 'Disconnected'}</strong></span>` +
           `<span>Airborne: <strong>${data.sightings.length}/${data.total_raw}</strong></span>`;
       }
@@ -283,6 +290,7 @@ class LiveState:
         self.tracks: dict[str, list[PassPoint]] = {}
         self.total_raw: int = 0
         self.feed_ok: bool = False
+        self.weather: WeatherSnapshot | None = None
         self.updated_utc: datetime | None = None
 
     def update(
@@ -293,6 +301,7 @@ class LiveState:
         tracks: dict[str, list[PassPoint]],
         total_raw: int,
         feed_ok: bool,
+        weather: WeatherSnapshot | None = None,
     ) -> None:
         with self._lock:
             self.moon = moon
@@ -300,11 +309,20 @@ class LiveState:
             self.tracks = {k: list(v) for k, v in tracks.items()}
             self.total_raw = total_raw
             self.feed_ok = feed_ok
+            self.weather = weather
             self.updated_utc = datetime.now(timezone.utc)
 
     def snapshot(
         self,
-    ) -> tuple[MoonPosition | None, list[AircraftSighting], dict[str, list[PassPoint]], int, bool, datetime | None]:
+    ) -> tuple[
+        MoonPosition | None,
+        list[AircraftSighting],
+        dict[str, list[PassPoint]],
+        int,
+        bool,
+        WeatherSnapshot | None,
+        datetime | None,
+    ]:
         with self._lock:
             return (
                 self.moon,
@@ -312,8 +330,63 @@ class LiveState:
                 {k: list(v) for k, v in self.tracks.items()},
                 self.total_raw,
                 self.feed_ok,
+                self.weather,
                 self.updated_utc,
             )
+
+
+class _PassCache:
+    """Thread-safe mtime/size-keyed in-memory cache for passes.jsonl."""
+
+    def __init__(self, passes_file: str | Path) -> None:
+        self._path = Path(passes_file)
+        self._lock = threading.Lock()
+        self._stat_key: tuple[int, int] | None = None
+        self._by_id: dict[str, PassRecord] = {}
+        self._summaries_bytes: bytes = b"[]"
+
+    def _refresh_locked(self) -> None:
+        try:
+            st = self._path.stat()
+            key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            self._stat_key = None
+            self._by_id = {}
+            self._summaries_bytes = b"[]"
+            return
+
+        if key == self._stat_key:
+            return
+
+        records = load_passes(self._path)
+        self._by_id = {r.pass_id: r for r in records}
+        summaries = [
+            {
+                "pass_id": p.pass_id,
+                "flight": p.flight,
+                "hex": p.hex,
+                "classification": p.classification,
+                "crossed_lunar_disk": p.crossed_lunar_disk,
+                "closest_utc": p.closest_utc,
+                "min_angular_sep_deg": p.min_angular_sep_deg,
+                "min_moon_radii": p.min_moon_radii,
+                "closest_altitude_ft": p.closest_altitude_ft,
+                "track_points": len(p.track),
+            }
+            for p in reversed(records)
+        ]
+        self._summaries_bytes = json.dumps(summaries).encode("utf-8")
+        self._stat_key = key
+
+    def get_summaries_bytes(self) -> bytes:
+        with self._lock:
+            self._refresh_locked()
+            return self._summaries_bytes
+
+    def get_by_id(self, pass_id: str) -> PassRecord | None:
+        with self._lock:
+            self._refresh_locked()
+            return self._by_id.get(pass_id)
 
 
 class LunaCrossWebServer:
@@ -323,9 +396,10 @@ class LunaCrossWebServer:
         self.host = host
         self.cfg = cfg
         self.live_state = live_state
+        self.pass_cache = _PassCache(cfg.passes_file)
 
         def handler_factory(*args: Any, **kwargs: Any) -> _Handler:
-            return _Handler(*args, cfg=cfg, live_state=live_state, **kwargs)
+            return _Handler(*args, cfg=cfg, live_state=live_state, pass_cache=self.pass_cache, **kwargs)
 
         self._httpd = ThreadingHTTPServer((host, port), handler_factory)
         self._httpd.daemon_threads = True
@@ -347,9 +421,17 @@ class LunaCrossWebServer:
 
 
 class _Handler(BaseHTTPRequestHandler):
-    def __init__(self, *args: Any, cfg: Config, live_state: LiveState, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        cfg: Config,
+        live_state: LiveState,
+        pass_cache: _PassCache,
+        **kwargs: Any,
+    ) -> None:
         self.cfg = cfg
         self.live_state = live_state
+        self.pass_cache = pass_cache
         super().__init__(*args, **kwargs)
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -364,10 +446,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _find_pass(self, pass_id: str) -> PassRecord | None:
-        for rec in load_passes(self.cfg.passes_file):
-            if rec.pass_id == pass_id:
-                return rec
-        return None
+        return self.pass_cache.get_by_id(pass_id)
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
@@ -377,11 +456,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/live.json":
-            moon, sightings, _, total_raw, feed_ok, updated = self.live_state.snapshot()
+            moon, sightings, _, total_raw, feed_ok, weather, updated = self.live_state.snapshot()
             payload: dict[str, Any] = {
                 "updated_utc": updated.isoformat() if updated else None,
                 "feed_ok": feed_ok,
                 "total_raw": total_raw,
+                "weather": weather.to_dict() if weather is not None else None,
                 "moon": (
                     {
                         "altitude_deg": round(moon.altitude_deg, 3),
@@ -413,32 +493,16 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/live.svg":
-            moon, sightings, tracks, _, _, _ = self.live_state.snapshot()
+            moon, sightings, tracks, _, _, weather, _ = self.live_state.snapshot()
             if moon is None:
                 svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120"><rect width="600" height="120" fill="#020617"/><text x="20" y="65" fill="#94a3b8" font-family="sans-serif">Waiting for first monitor sample...</text></svg>'
             else:
-                svg = render_live_snapshot_svg(moon, sightings, tracks, self.cfg)
+                svg = render_live_snapshot_svg(moon, sightings, tracks, self.cfg, weather=weather)
             self._send(HTTPStatus.OK, "image/svg+xml; charset=utf-8", svg.encode("utf-8"))
             return
 
         if path == "/api/passes":
-            passes = list(reversed(load_passes(self.cfg.passes_file)))
-            summaries = [
-                {
-                    "pass_id": p.pass_id,
-                    "flight": p.flight,
-                    "hex": p.hex,
-                    "classification": p.classification,
-                    "crossed_lunar_disk": p.crossed_lunar_disk,
-                    "closest_utc": p.closest_utc,
-                    "min_angular_sep_deg": p.min_angular_sep_deg,
-                    "min_moon_radii": p.min_moon_radii,
-                    "closest_altitude_ft": p.closest_altitude_ft,
-                    "track_points": len(p.track),
-                }
-                for p in passes
-            ]
-            self._send(HTTPStatus.OK, "application/json", json.dumps(summaries).encode("utf-8"))
+            self._send(HTTPStatus.OK, "application/json", self.pass_cache.get_summaries_bytes())
             return
 
         if path.startswith("/api/passes/") and path.endswith(".svg"):

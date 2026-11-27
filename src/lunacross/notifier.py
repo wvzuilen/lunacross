@@ -15,6 +15,7 @@ import httpx
 from lunacross.detector import PassRecord, TransitEvent
 from lunacross.geometry import classify_visual_visibility
 from lunacross.moon import compass_direction
+from lunacross.weather import WeatherSnapshot
 
 PUSHOVER_API_URL = "https://api.pushover.net/1/messages.json"
 
@@ -95,6 +96,39 @@ def prune_old_close_passes(
     return removed
 
 
+def _parse_hhmm_minutes(token: str) -> int:
+    parts = token.strip().split(":")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid HH:MM token: {token!r}")
+    hh = int(parts[0])
+    mm = int(parts[1])
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        raise ValueError(f"Out-of-range HH:MM token: {token!r}")
+    return hh * 60 + mm
+
+
+def is_in_quiet_hours(local_dt: datetime, quiet_hours_spec: str | None) -> bool:
+    """Return True if local_dt falls inside an 'HH:MM-HH:MM' quiet window."""
+    if not quiet_hours_spec or not quiet_hours_spec.strip():
+        return False
+    raw = quiet_hours_spec.strip()
+    if "-" not in raw:
+        return False
+    start_s, end_s = raw.split("-", 1)
+    try:
+        start_m = _parse_hhmm_minutes(start_s)
+        end_m = _parse_hhmm_minutes(end_s)
+    except ValueError:
+        return False
+    if start_m == end_m:
+        return False
+    cur_m = local_dt.hour * 60 + local_dt.minute
+    if start_m < end_m:
+        return start_m <= cur_m < end_m
+    # Overnight window (e.g. 23:30-07:00)
+    return cur_m >= start_m or cur_m < end_m
+
+
 class TransitNotifier:
     """Dispatches detected lunar transit events to JSONL log, macOS, Pushover, and webhook."""
 
@@ -112,6 +146,8 @@ class TransitNotifier:
         pushover_priority: int = 1,
         pushover_events: str = "INCOMING,TRANSIT",
         pushover_min_angular_arcmin: float = 0.0,
+        pushover_max_cloud_cover_pct: float = 100.0,
+        pushover_quiet_hours: str | None = None,
         adsb_url: str | None = None,
     ) -> None:
         self.log_path = Path(log_file) if log_file else None
@@ -129,6 +165,8 @@ class TransitNotifier:
             if part.strip()
         }
         self.pushover_min_angular_arcmin = max(0.0, float(pushover_min_angular_arcmin))
+        self.pushover_max_cloud_cover_pct = max(0.0, min(100.0, float(pushover_max_cloud_cover_pct)))
+        self.pushover_quiet_hours = pushover_quiet_hours.strip() if pushover_quiet_hours else None
         self.adsb_url = adsb_url
 
     @property
@@ -136,12 +174,17 @@ class TransitNotifier:
         """Return True when both Pushover credentials are configured."""
         return bool(self.pushover_app_token and self.pushover_user_key)
 
-    def _build_payload(self, event: TransitEvent) -> dict[str, object]:
+    def _build_payload(
+        self,
+        event: TransitEvent,
+        weather: WeatherSnapshot | None = None,
+        suppressed_reason: str | None = None,
+    ) -> dict[str, object]:
         s = event.sighting
         ac = s.aircraft
         m = event.moon
         vis_tier, _ = classify_visual_visibility(s.plane_angular_size_deg, m.illumination_pct)
-        return {
+        payload: dict[str, object] = {
             "timestamp_utc": event.timestamp_utc.isoformat(),
             "event_type": event.event_type,
             "flight": ac.flight,
@@ -168,6 +211,14 @@ class TransitNotifier:
             "moon_illumination_pct": round(m.illumination_pct, 1),
             "moon_angular_diameter_deg": round(m.angular_diameter_deg, 4),
         }
+        if weather is not None:
+            payload["cloud_cover_pct"] = round(weather.cloud_cover_pct, 1)
+            payload["sky_obstruction_pct"] = round(weather.sky_obstruction_pct, 1)
+            payload["weather_condition"] = weather.condition_label
+            payload["temperature_c"] = round(weather.temperature_c, 1)
+        if suppressed_reason is not None:
+            payload["pushover_suppressed_reason"] = suppressed_reason
+        return payload
 
     def _write_jsonl(self, payload: dict[str, object]) -> None:
         if self.log_path is None:
@@ -220,7 +271,11 @@ class TransitNotifier:
         except Exception:
             pass
 
-    def _format_pushover(self, event: TransitEvent) -> tuple[str, str]:
+    def _format_pushover(
+        self,
+        event: TransitEvent,
+        weather: WeatherSnapshot | None = None,
+    ) -> tuple[str, str]:
         s = event.sighting
         ac = s.aircraft
         m = event.moon
@@ -230,6 +285,8 @@ class TransitNotifier:
             f"Moon: alt {m.altitude_deg:.1f}°, az {m.azimuth_deg:.1f}° "
             f"({compass_direction(m.azimuth_deg)})"
         )
+        if weather is not None:
+            moon_info += f"\nSky: {weather.condition_label} ({weather.temperature_c:+.1f}°C)"
         plane_info = (
             f"Altitude: {ac.altitude_ft:,.0f} ft | Distance: {s.sky_pos.slant_range_km:.1f} km\n"
             f"Visibility: {vis_label}"
@@ -324,22 +381,48 @@ class TransitNotifier:
         except Exception:
             pass
 
-    def notify(self, event: TransitEvent) -> dict[str, object]:
+    def _pushover_suppression_reason(
+        self,
+        event: TransitEvent,
+        weather: WeatherSnapshot | None,
+    ) -> str | None:
+        local_dt = event.timestamp_utc.astimezone()
+        if is_in_quiet_hours(local_dt, self.pushover_quiet_hours):
+            return "quiet_hours"
+        if (
+            weather is not None
+            and self.pushover_max_cloud_cover_pct < 100.0
+            and weather.sky_obstruction_pct > self.pushover_max_cloud_cover_pct
+        ):
+            return "cloud_cover"
+        arcmin = event.sighting.plane_angular_size_deg * 60.0
+        if self.pushover_min_angular_arcmin > 0.0 and arcmin < self.pushover_min_angular_arcmin:
+            return "angular_size"
+        return None
+
+    def notify(
+        self,
+        event: TransitEvent,
+        *,
+        weather: WeatherSnapshot | None = None,
+    ) -> dict[str, object]:
         """Log event and dispatch all configured notifications."""
-        payload = self._build_payload(event)
+        want_pushover = self.pushover_enabled and event.event_type in self._pushover_events
+        suppressed = self._pushover_suppression_reason(event, weather) if want_pushover else None
+
+        payload = self._build_payload(event, weather=weather, suppressed_reason=suppressed)
         self._write_jsonl(payload)
-        self._send_macos_notification(event)
-        if self.pushover_enabled and event.event_type in self._pushover_events:
-            arcmin = event.sighting.plane_angular_size_deg * 60.0
-            if self.pushover_min_angular_arcmin <= 0.0 or arcmin >= self.pushover_min_angular_arcmin:
-                title, message = self._format_pushover(event)
-                tar_url = build_tar1090_aircraft_url(self.adsb_url, event.sighting.aircraft.hex)
-                self.send_pushover(
-                    title,
-                    message,
-                    url=tar_url,
-                    url_title="View on radar (tar1090)" if tar_url else None,
-                    raise_on_error=False,
-                )
+        if suppressed is None:
+            self._send_macos_notification(event)
+        if want_pushover and suppressed is None:
+            title, message = self._format_pushover(event, weather=weather)
+            tar_url = build_tar1090_aircraft_url(self.adsb_url, event.sighting.aircraft.hex)
+            self.send_pushover(
+                title,
+                message,
+                url=tar_url,
+                url_title="View on radar (tar1090)" if tar_url else None,
+                raise_on_error=False,
+            )
         self._send_webhook(payload)
         return payload

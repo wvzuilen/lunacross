@@ -129,17 +129,29 @@ class MoonTracker:
         )
         self.observer = self.earth + self.topos
 
-    def get_position(self, dt: datetime | None = None) -> MoonPosition:
+    def get_position(
+        self,
+        dt: datetime | None = None,
+        *,
+        temperature_c: float = 10.0,
+        pressure_hpa: float = 1010.0,
+    ) -> MoonPosition:
         """Compute apparent topocentric altitude, azimuth, drift rate, and diameter of the Moon."""
         dt_utc = _ensure_utc(dt)
         t = self.ts.from_datetime(dt_utc)
         t_next = self.ts.from_datetime(dt_utc + timedelta(seconds=_VELOCITY_STEP_S))
 
         apparent = self.observer.at(t).observe(self.moon).apparent()
-        alt, az, distance = apparent.altaz("standard")
+        alt, az, distance = apparent.altaz(
+            temperature_C=temperature_c,
+            pressure_mbar=pressure_hpa,
+        )
 
         apparent_next = self.observer.at(t_next).observe(self.moon).apparent()
-        alt_next, az_next, _ = apparent_next.altaz("standard")
+        alt_next, az_next, _ = apparent_next.altaz(
+            temperature_C=temperature_c,
+            pressure_mbar=pressure_hpa,
+        )
 
         dist_km = float(distance.km)
         angular_radius_deg = math.degrees(math.asin(min(1.0, MOON_RADIUS_KM / dist_km)))

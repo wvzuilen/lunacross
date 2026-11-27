@@ -196,6 +196,9 @@ def aircraft_altaz(
     ac_lon: float,
     ac_alt_m: float,
     apply_refraction: bool = True,
+    *,
+    temperature_c: float = 10.0,
+    pressure_hpa: float = 1010.0,
 ) -> SkyPosition:
     """Compute apparent altitude, azimuth, slant range, and ground distance to an aircraft."""
     ox, oy, oz = geodetic_to_ecef(obs_lat, obs_lon, obs_alt_m)
@@ -212,7 +215,10 @@ def aircraft_altaz(
         # Scale atmospheric refraction by aircraft height above the observer
         delta_alt = max(0.0, ac_alt_m - obs_alt_m)
         scale = 1.0 - math.exp(-delta_alt / ATMOSPHERE_SCALE_HEIGHT_M)
-        apparent_alt_deg += float(refraction(geom_alt_deg, temperature_C=10.0, pressure_mbar=1010.0)) * scale
+        apparent_alt_deg += (
+            float(refraction(geom_alt_deg, temperature_C=temperature_c, pressure_mbar=pressure_hpa))
+            * scale
+        )
 
     return SkyPosition(
         altitude_deg=apparent_alt_deg,

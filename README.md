@@ -6,10 +6,11 @@ A Python tool that computes the exact apparent position of the Moon from your lo
 
 - **High-precision lunar position (`skyfield` + JPL `de421.bsp`)**: topocentric altitude (including atmospheric refraction), azimuth + compass direction, distance in km, exact apparent angular diameter, illumination percentage, lunar phase, and next moonrise/moonset.
 - **Local ADS-B receiver integration**: reads live `/data/aircraft.json` from a local `tar1090`/`readsb` feed and can optionally sync coordinates from `/data/receiver.json` (`--sync-receiver`), plus an optional **Hybrid ADS-B mode** combining your local receiver with a free community radius API (`adsb.lol`) for extended coverage and aircraft type/registration enrichment.
-- **3D WGS-84 line-of-sight geometry**: transforms aircraft positions (`lat`, `lon`, `alt_geom` HAE / QNH- & geoid-corrected `alt_baro`) via ECEF → local ENU into exact apparent viewing angles (azimuth & altitude) with altitude-scaled refraction and `seen_pos` dead-reckoning.
+- **3D WGS-84 line-of-sight geometry**: transforms aircraft positions (`lat`, `lon`, `alt_geom` HAE / QNH- & geoid-corrected `alt_baro`) via ECEF → local ENU into exact apparent viewing angles (azimuth & altitude) with live temperature/pressure-aware atmospheric refraction and `seen_pos` dead-reckoning.
 - **Lookahead trajectory prediction & sub-second detection**: projects flight paths ahead on the WGS-84 ellipsoid (including turn rate and real-time Moon drift velocity) to warn of upcoming crossings (`INCOMING`) while interpolating between 1-second ADS-B polls so fast aircraft never slip across the lunar disk undetected.
-- **Complete close-pass track recording**: every aircraft entering `log_margin_deg` (default `5.0°`) is recorded with its full topocentric sky track (`passes.jsonl`) and true closest approach.
-- **Observer-perspective visualization & Web UI**: generates dark-mode SVG/HTML charts showing your horizon, compass bearings, Moon phase, and aircraft trajectory (both real-time and post-hoc replay), served via an optional built-in Web UI (`web_port = 8091`) or `lunacross render`.
+- **Live weather & cloud-cover awareness (`Open-Meteo`)**: periodically fetches local cloud layers, fog/visibility, temperature, and sea-level pressure (no API key required) to feed exact atmospheric refraction and fallback QNH, display live sky clarity in the UI, and automatically suppress Pushover alerts during overcast skies or configured `pushover_quiet_hours`.
+- **Complete close-pass track recording**: every aircraft entering `log_margin_deg` (default `2.0°`) is recorded with its full topocentric sky track (`passes.jsonl`), true lunar phase angle, and automatic retention pruning for older `CLOSE_PASS` entries.
+- **Observer-perspective visualization & Web UI**: generates dark-mode SVG/HTML charts showing your horizon, compass bearings, Moon phase, and aircraft trajectory (both real-time and post-hoc replay with pagination, filters, and mtime-cached pass lookup), served via an optional built-in Web UI (`web_port = 8091`) or `lunacross render`.
 - **Alerts & logging**: live terminal dashboard (`rich`), JSONL logs (`transits.jsonl` & `passes.jsonl`), Pushover push notifications (including a direct link to `tar1090`), macOS Notification Center alerts, and optional webhook support.
 
 ## UI Preview
@@ -104,7 +105,7 @@ uv run lunacross render --list
 # Render the latest recorded pass (or pass --pass-id <id>) to an interactive HTML or SVG file
 uv run lunacross render -o pass.html
 
-# Render the current live sky + 60s predicted flight paths
+# Render the current live sky + predicted flight paths
 uv run lunacross render --live -o live_sky.html
 
 # Simulate a lunar transit and render its sky chart

@@ -11,6 +11,7 @@ from lunacross.config import Config
 from lunacross.detector import AircraftSighting, PassPoint, PassRecord
 from lunacross.geometry import aircraft_altaz, extrapolate_position, sky_tangent_offset_deg
 from lunacross.moon import MoonPosition, compass_direction
+from lunacross.weather import WeatherSnapshot
 
 _CLASS_COLORS = {
     "TRANSIT": "#ef4444",
@@ -451,7 +452,7 @@ def render_pass_svg(record: PassRecord, *, width: int = 1120, height: int = 540)
                 max_alt_deg=max_alt,
                 moon_alt_deg=record.moon_alt_deg,
                 moon_az_deg=record.moon_az_deg,
-                moon_phase_deg=180.0 if record.moon_illumination_pct > 95.0 else 90.0,
+                moon_phase_deg=record.moon_phase_deg,
                 moon_label=moon_lbl,
                 body_elements="\n".join(left_body),
             ),
@@ -463,7 +464,7 @@ def render_pass_svg(record: PassRecord, *, width: int = 1120, height: int = 540)
                 h=right_h,
                 half_fov_deg=half_fov,
                 moon_diameter_deg=record.moon_angular_diameter_deg,
-                moon_phase_deg=180.0 if record.moon_illumination_pct > 95.0 else 90.0,
+                moon_phase_deg=record.moon_phase_deg,
                 title="Zoomed Lunar View",
                 footer_lines=footer_lines,
                 body_elements="\n".join(right_body),
@@ -479,6 +480,7 @@ def render_live_snapshot_svg(
     tracks: dict[str, list[PassPoint]],
     cfg: Config,
     *,
+    weather: WeatherSnapshot | None = None,
     predict_s: float | None = None,
     width: int = 1120,
     height: int = 540,
@@ -567,7 +569,16 @@ def render_live_snapshot_svg(
                     float(step),
                     track_rate_deg_s=ac.track_rate_deg_s,
                 )
-                sky_f = aircraft_altaz(cfg.latitude, cfg.longitude, obs_hae_m, plat, plon, palt)
+                sky_f = aircraft_altaz(
+                    cfg.latitude,
+                    cfg.longitude,
+                    obs_hae_m,
+                    plat,
+                    plon,
+                    palt,
+                    temperature_c=weather.temperature_c if weather else 10.0,
+                    pressure_hpa=weather.surface_pressure_hpa if weather else 1010.0,
+                )
                 if sky_f.altitude_deg > -2.0:
                     fut_coords.append((sky_f.altitude_deg, sky_f.azimuth_deg, float(step)))
             if len(fut_coords) >= 2:
@@ -600,10 +611,15 @@ def render_live_snapshot_svg(
 
     local_str = moon.timestamp_utc.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     header_title = f"LunaCross Live Sky View — {local_str}"
+    wx_suffix = (
+        f" | Sky: {weather.condition_label}, {weather.temperature_c:+.1f}°C"
+        if weather is not None
+        else ""
+    )
     header_sub = (
         f"Observer {cfg.latitude:.4f}°N, {cfg.longitude:.4f}°E | "
         f"Moon {moon.altitude_deg:+.1f}° / {moon.azimuth_deg:.1f}° ({compass_direction(moon.azimuth_deg)}) | "
-        f"Airborne tracked: {len(sightings_list)}"
+        f"Airborne tracked: {len(sightings_list)}{wx_suffix}"
     )
     moon_lbl = f"Moon ({moon.altitude_deg:+.1f}° / {moon.azimuth_deg:.0f}° {compass_direction(moon.azimuth_deg)})"
     footer_lines = [
@@ -700,10 +716,11 @@ def render_live_snapshot_html(
     tracks: dict[str, list[PassPoint]],
     cfg: Config,
     *,
+    weather: WeatherSnapshot | None = None,
     predict_s: float | None = None,
 ) -> str:
     """Wrap a rendered live sky SVG in a standalone HTML document."""
     return _wrap_html(
         "LunaCross Live Sky View",
-        render_live_snapshot_svg(moon, sightings, tracks, cfg, predict_s=predict_s),
+        render_live_snapshot_svg(moon, sightings, tracks, cfg, weather=weather, predict_s=predict_s),
     )

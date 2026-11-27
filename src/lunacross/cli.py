@@ -30,6 +30,7 @@ from lunacross.visualize import (
     render_pass_html,
     render_pass_svg,
 )
+from lunacross.weather import WeatherClient, WeatherSnapshot
 from lunacross.web import LiveState, LunaCrossWebServer
 
 console = Console()
@@ -56,6 +57,7 @@ def _build_moon_panel(
     moon: MoonPosition,
     rise_set: MoonRiseSet,
     cfg: Config,
+    weather: WeatherSnapshot | None = None,
 ) -> Panel:
     local_time = moon.timestamp_utc.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     horizon_txt = (
@@ -99,6 +101,18 @@ def _build_moon_panel(
         "Next moonset:",
         _format_local(rise_set.next_set_utc),
     )
+    if weather is not None:
+        obs_color = (
+            "green"
+            if weather.sky_obstruction_pct < 45.0
+            else ("yellow" if weather.sky_obstruction_pct <= cfg.pushover_max_cloud_cover_pct else "red")
+        )
+        table.add_row(
+            "Weather / Sky:",
+            f"[{obs_color}]{weather.condition_label}[/]",
+            "Atmosphere:",
+            f"{weather.temperature_c:+.1f} °C, {weather.pressure_msl_hpa:.0f} hPa",
+        )
 
     return Panel(
         table,
@@ -242,12 +256,37 @@ def _make_moon_tracker(cfg: Config) -> MoonTracker:
     )
 
 
+def _make_weather_client(cfg: Config) -> WeatherClient:
+    return WeatherClient(
+        cfg.latitude,
+        cfg.longitude,
+        enabled=cfg.weather_enabled,
+        refresh_interval_s=cfg.weather_interval_s,
+    )
+
+
+def _moon_at(
+    tracker: MoonTracker,
+    now_utc: datetime,
+    weather: WeatherSnapshot | None,
+) -> MoonPosition:
+    if weather is not None:
+        return tracker.get_position(
+            now_utc,
+            temperature_c=weather.temperature_c,
+            pressure_hpa=weather.surface_pressure_hpa,
+        )
+    return tracker.get_position(now_utc)
+
+
 def _cmd_moon(cfg: Config) -> int:
     tracker = _make_moon_tracker(cfg)
     now = datetime.now(timezone.utc)
-    moon = tracker.get_position(now)
+    with _make_weather_client(cfg) as wx_client:
+        weather = wx_client.get_weather()
+    moon = _moon_at(tracker, now, weather)
     rise_set = tracker.next_rise_set(now)
-    console.print(_build_moon_panel(moon, rise_set, cfg))
+    console.print(_build_moon_panel(moon, rise_set, cfg, weather=weather))
     return 0
 
 
@@ -266,7 +305,9 @@ def _make_adsb_client(cfg: Config) -> AdsbClient:
 def _cmd_check(cfg: Config) -> int:
     tracker = _make_moon_tracker(cfg)
     now = datetime.now(timezone.utc)
-    moon = tracker.get_position(now)
+    with _make_weather_client(cfg) as wx_client:
+        weather = wx_client.get_weather()
+    moon = _moon_at(tracker, now, weather)
     rise_set = tracker.next_rise_set(now)
 
     detector = TransitDetector(
@@ -280,16 +321,25 @@ def _cmd_check(cfg: Config) -> int:
 
     try:
         with _make_adsb_client(cfg) as client:
-            snapshot = client.fetch_snapshot(max_seen_pos_s=cfg.max_seen_pos_s)
+            snapshot = client.fetch_snapshot(
+                max_seen_pos_s=cfg.max_seen_pos_s,
+                fallback_qnh_hpa=weather.pressure_msl_hpa if weather else None,
+            )
     except httpx.HTTPError as exc:
-        console.print(_build_moon_panel(moon, rise_set, cfg))
+        console.print(_build_moon_panel(moon, rise_set, cfg, weather=weather))
         console.print(f"[bold red]Failed to fetch ADS-B data ({cfg.adsb_url}):[/] {exc}")
         return 1
 
-    sightings, _ = detector.evaluate(moon, snapshot.aircraft, now_utc=now)
+    sightings, _ = detector.evaluate(
+        moon,
+        snapshot.aircraft,
+        now_utc=now,
+        temperature_c=weather.temperature_c if weather else 10.0,
+        pressure_hpa=weather.surface_pressure_hpa if weather else 1010.0,
+    )
     active = [s for s in sightings if s.status != "TRACKING"]
 
-    console.print(_build_moon_panel(moon, rise_set, cfg))
+    console.print(_build_moon_panel(moon, rise_set, cfg, weather=weather))
     console.print(_build_alerts_panel(active, [], moon, cfg.min_moon_alt_deg))
     console.print(
         _build_aircraft_table(
@@ -327,6 +377,8 @@ def _cmd_monitor(cfg: Config) -> int:
         pushover_priority=cfg.pushover_priority,
         pushover_events=cfg.pushover_events,
         pushover_min_angular_arcmin=cfg.pushover_min_angular_arcmin,
+        pushover_max_cloud_cover_pct=cfg.pushover_max_cloud_cover_pct,
+        pushover_quiet_hours=cfg.pushover_quiet_hours,
         adsb_url=cfg.adsb_url,
     )
 
@@ -369,11 +421,20 @@ def _cmd_monitor(cfg: Config) -> int:
                     f"[{ts}] Pruned {pruned} CLOSE_PASS record(s) older than {cfg.close_pass_retention_days}d."
                 )
 
-    def poll_once() -> tuple[MoonPosition, MoonRiseSet, list[AircraftSighting], list[TransitEvent], int, str]:
+    def poll_once() -> tuple[
+        MoonPosition,
+        MoonRiseSet,
+        list[AircraftSighting],
+        list[TransitEvent],
+        int,
+        str,
+        WeatherSnapshot | None,
+    ]:
         nonlocal cached_rise_set, last_rise_set_at
         now = datetime.now(timezone.utc)
         maybe_prune_passes(now)
-        moon = tracker.get_position(now)
+        weather = wx_client.get_weather()
+        moon = _moon_at(tracker, now, weather)
         if (
             cached_rise_set is None
             or last_rise_set_at is None
@@ -383,10 +444,19 @@ def _cmd_monitor(cfg: Config) -> int:
             last_rise_set_at = now
 
         try:
-            snapshot = client.fetch_snapshot(max_seen_pos_s=cfg.max_seen_pos_s)
-            sightings, events = detector.evaluate(moon, snapshot.aircraft, now_utc=now)
+            snapshot = client.fetch_snapshot(
+                max_seen_pos_s=cfg.max_seen_pos_s,
+                fallback_qnh_hpa=weather.pressure_msl_hpa if weather else None,
+            )
+            sightings, events = detector.evaluate(
+                moon,
+                snapshot.aircraft,
+                now_utc=now,
+                temperature_c=weather.temperature_c if weather else 10.0,
+                pressure_hpa=weather.surface_pressure_hpa if weather else 1010.0,
+            )
             for ev in events:
-                notifier.notify(ev)
+                notifier.notify(ev, weather=weather)
                 recent_events.append(ev)
             for rec in detector.pop_completed_passes():
                 notifier.write_pass(rec)
@@ -407,6 +477,7 @@ def _cmd_monitor(cfg: Config) -> int:
                 tracks=detector.get_recent_tracks(),
                 total_raw=total_raw,
                 feed_ok=True,
+                weather=weather,
             )
         except httpx.HTTPError as exc:
             sightings = []
@@ -419,20 +490,21 @@ def _cmd_monitor(cfg: Config) -> int:
                 tracks=detector.get_recent_tracks(),
                 total_raw=0,
                 feed_ok=False,
+                weather=weather,
             )
 
-        return moon, cached_rise_set, sightings, events, total_raw, feed_status
+        return moon, cached_rise_set, sightings, events, total_raw, feed_status, weather
 
     try:
-        with _make_adsb_client(cfg) as client:
+        with _make_adsb_client(cfg) as client, _make_weather_client(cfg) as wx_client:
             if console.is_terminal:
                 with Live(console=console, refresh_per_second=2, screen=False) as live:
                     try:
                         while not stop_requested:
-                            moon, rise_set, sightings, _, total_raw, feed_status = poll_once()
+                            moon, rise_set, sightings, _, total_raw, feed_status, weather = poll_once()
                             active = [s for s in sightings if s.status != "TRACKING"]
                             renderable = Group(
-                                _build_moon_panel(moon, rise_set, cfg),
+                                _build_moon_panel(moon, rise_set, cfg, weather=weather),
                                 _build_alerts_panel(active, recent_events, moon, cfg.min_moon_alt_deg),
                                 _build_aircraft_table(sightings, cfg.top_n, total_raw, feed_status),
                             )
@@ -443,10 +515,10 @@ def _cmd_monitor(cfg: Config) -> int:
             else:
                 try:
                     while not stop_requested:
-                        moon, rise_set, sightings, events, total_raw, feed_status = poll_once()
+                        moon, rise_set, sightings, events, total_raw, feed_status, weather = poll_once()
                         active = [s for s in sightings if s.status != "TRACKING"]
                         if first_non_tty_print:
-                            console.print(_build_moon_panel(moon, rise_set, cfg))
+                            console.print(_build_moon_panel(moon, rise_set, cfg, weather=weather))
                             console.print(_build_alerts_panel(active, recent_events, moon, cfg.min_moon_alt_deg))
                             console.print(_build_aircraft_table(sightings, cfg.top_n, total_raw, feed_status))
                             sys.stdout.flush()
@@ -552,7 +624,9 @@ def _cmd_render(
     if live:
         tracker = _make_moon_tracker(cfg)
         now = datetime.now(timezone.utc)
-        moon = tracker.get_position(now)
+        with _make_weather_client(cfg) as wx_client:
+            weather = wx_client.get_weather()
+        moon = _moon_at(tracker, now, weather)
         detector = TransitDetector(
             obs_lat=cfg.latitude,
             obs_lon=cfg.longitude,
@@ -564,18 +638,27 @@ def _cmd_render(
         )
         try:
             with _make_adsb_client(cfg) as client:
-                snapshot = client.fetch_snapshot(max_seen_pos_s=cfg.max_seen_pos_s)
+                snapshot = client.fetch_snapshot(
+                    max_seen_pos_s=cfg.max_seen_pos_s,
+                    fallback_qnh_hpa=weather.pressure_msl_hpa if weather else None,
+                )
         except httpx.HTTPError as exc:
             console.print(f"[bold red]Failed to fetch ADS-B data ({cfg.adsb_url}):[/] {exc}")
             return 1
 
-        sightings, _ = detector.evaluate(moon, snapshot.aircraft, now_utc=now)
+        sightings, _ = detector.evaluate(
+            moon,
+            snapshot.aircraft,
+            now_utc=now,
+            temperature_c=weather.temperature_c if weather else 10.0,
+            pressure_hpa=weather.surface_pressure_hpa if weather else 1010.0,
+        )
         out_path = output or Path("lunacross_live.html")
         is_svg = out_path.suffix.lower() == ".svg"
         content = (
-            render_live_snapshot_svg(moon, sightings, detector.get_recent_tracks(), cfg)
+            render_live_snapshot_svg(moon, sightings, detector.get_recent_tracks(), cfg, weather=weather)
             if is_svg
-            else render_live_snapshot_html(moon, sightings, detector.get_recent_tracks(), cfg)
+            else render_live_snapshot_html(moon, sightings, detector.get_recent_tracks(), cfg, weather=weather)
         )
         _write_render_output(out_path, is_svg, content)
         return 0

@@ -116,6 +116,7 @@ class PassRecord:
     moon_illumination_pct: float
     moon_phase_name: str
     track: list[PassPoint]
+    moon_phase_deg: float = 180.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -143,12 +144,24 @@ class PassRecord:
             "moon_az_deg": round(self.moon_az_deg, 4),
             "moon_angular_diameter_deg": round(self.moon_angular_diameter_deg, 4),
             "moon_illumination_pct": round(self.moon_illumination_pct, 1),
+            "moon_phase_deg": round(self.moon_phase_deg, 2),
             "moon_phase_name": self.moon_phase_name,
             "track": [pt.to_dict() for pt in self.track],
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PassRecord:
+        illum = float(data["moon_illumination_pct"])
+        raw_phase_deg = data.get("moon_phase_deg")
+        if raw_phase_deg is not None:
+            phase_deg = float(raw_phase_deg)
+        else:
+            # Reconstruct approximate phase angle from illumination + phase_name for legacy records
+            frac = max(0.0, min(1.0, illum / 100.0))
+            # frac = (1 - cos(phase)) / 2  =>  cos(phase) = 1 - 2 * frac
+            base_ang = math.degrees(math.acos(max(-1.0, min(1.0, 1.0 - 2.0 * frac))))
+            phase_name = str(data.get("moon_phase_name", ""))
+            phase_deg = (360.0 - base_ang) % 360.0 if "Waning" in phase_name or "Last" in phase_name else base_ang
         return cls(
             pass_id=str(data["pass_id"]),
             flight=str(data["flight"]),
@@ -173,9 +186,10 @@ class PassRecord:
             moon_alt_deg=float(data["moon_alt_deg"]),
             moon_az_deg=float(data["moon_az_deg"]),
             moon_angular_diameter_deg=float(data["moon_angular_diameter_deg"]),
-            moon_illumination_pct=float(data["moon_illumination_pct"]),
+            moon_illumination_pct=illum,
             moon_phase_name=str(data["moon_phase_name"]),
             track=[PassPoint.from_dict(pt) for pt in data.get("track", [])],
+            moon_phase_deg=phase_deg,
         )
 
 
@@ -230,6 +244,7 @@ class _ActivePass:
     moon_az_deg: float
     moon_angular_diameter_deg: float
     moon_illumination_pct: float
+    moon_phase_deg: float
     moon_phase_name: str
     track: list[PassPoint]
     outside_count: int = 0
@@ -303,6 +318,8 @@ class TransitDetector:
         moon: MoonPosition,
         disk_threshold_deg: float,
         alert_threshold_deg: float,
+        temperature_c: float = 10.0,
+        pressure_hpa: float = 1010.0,
     ) -> tuple[float | None, float | None, float | None]:
         if (
             self.predict_horizon_s <= 0.0
@@ -323,7 +340,16 @@ class TransitDetector:
                 t_s,
                 track_rate_deg_s=ac.track_rate_deg_s,
             )
-            sky = aircraft_altaz(self.obs_lat, self.obs_lon, self.obs_alt_m, plat, plon, palt)
+            sky = aircraft_altaz(
+                self.obs_lat,
+                self.obs_lon,
+                self.obs_alt_m,
+                plat,
+                plon,
+                palt,
+                temperature_c=temperature_c,
+                pressure_hpa=pressure_hpa,
+            )
             m_alt, m_az = moon.at_offset(t_s)
             sep = angular_separation_deg(
                 sky.altitude_deg,
@@ -423,6 +449,7 @@ class TransitDetector:
             moon_illumination_pct=active.moon_illumination_pct,
             moon_phase_name=active.moon_phase_name,
             track=list(active.track),
+            moon_phase_deg=active.moon_phase_deg,
         )
 
     def _update_pass_tracking(
@@ -512,6 +539,7 @@ class TransitDetector:
                 moon_az_deg=moon.azimuth_deg,
                 moon_angular_diameter_deg=moon.angular_diameter_deg,
                 moon_illumination_pct=moon.illumination_pct,
+                moon_phase_deg=moon.phase_deg,
                 moon_phase_name=moon.phase_name,
                 track=track,
             )
@@ -541,6 +569,7 @@ class TransitDetector:
                 active.moon_az_deg = moon.azimuth_deg
                 active.moon_angular_diameter_deg = moon.angular_diameter_deg
                 active.moon_illumination_pct = moon.illumination_pct
+                active.moon_phase_deg = moon.phase_deg
                 active.moon_phase_name = moon.phase_name
                 crossed, classification = self._classify_pass(
                     active.min_sep_deg, disk_threshold_deg, alert_threshold_deg
@@ -589,6 +618,9 @@ class TransitDetector:
         moon: MoonPosition,
         aircraft_list: list[Aircraft],
         now_utc: datetime | None = None,
+        *,
+        temperature_c: float = 10.0,
+        pressure_hpa: float = 1010.0,
     ) -> tuple[list[AircraftSighting], list[TransitEvent]]:
         """Evaluate all aircraft against the Moon and return sorted sightings and new events."""
         current_utc = now_utc or datetime.now(timezone.utc)
@@ -612,6 +644,8 @@ class TransitDetector:
                 cur_lat,
                 cur_lon,
                 cur_alt_m,
+                temperature_c=temperature_c,
+                pressure_hpa=pressure_hpa,
             )
             sep_deg = angular_separation_deg(
                 sky_pos.altitude_deg,
@@ -628,25 +662,30 @@ class TransitDetector:
                 prev_dt, prev_sky, prev_alt_ft = prev
                 dt_gap = (current_utc - prev_dt).total_seconds()
                 if 0.0 < dt_gap <= 5.0 and (prev_sky.altitude_deg > 0.0 or sky_pos.altitude_deg > 0.0):
+                    mid_m_alt, mid_m_az = moon.at_offset(-0.5 * dt_gap)
                     seg_sep, u, interp_alt, interp_az = segment_closest_approach(
                         prev_sky.altitude_deg,
                         prev_sky.azimuth_deg,
                         sky_pos.altitude_deg,
                         sky_pos.azimuth_deg,
-                        moon.altitude_deg,
-                        moon.azimuth_deg,
+                        mid_m_alt,
+                        mid_m_az,
                     )
-                    if 0.0 < u < 1.0 and seg_sep < min(sep_deg, angular_separation_deg(prev_sky.altitude_deg, prev_sky.azimuth_deg, moon.altitude_deg, moon.azimuth_deg)):
+                    m_u_alt, m_u_az = moon.at_offset((u - 1.0) * dt_gap)
+                    true_u_sep = angular_separation_deg(interp_alt, interp_az, m_u_alt, m_u_az)
+                    prev_m_alt, prev_m_az = moon.at_offset(-dt_gap)
+                    prev_sep = angular_separation_deg(prev_sky.altitude_deg, prev_sky.azimuth_deg, prev_m_alt, prev_m_az)
+                    if 0.0 < u < 1.0 and true_u_sep < min(sep_deg, prev_sep):
                         interp_dt = prev_dt + timedelta(seconds=dt_gap * u)
-                        interp_sep_deg = seg_sep
+                        interp_sep_deg = true_u_sep
                         interp_point = PassPoint(
                             timestamp_utc=interp_dt.isoformat(),
                             aircraft_alt_deg=interp_alt,
                             aircraft_az_deg=interp_az,
-                            moon_alt_deg=moon.altitude_deg,
-                            moon_az_deg=moon.azimuth_deg,
+                            moon_alt_deg=m_u_alt,
+                            moon_az_deg=m_u_az,
                             moon_angular_radius_deg=moon.angular_radius_deg,
-                            angular_sep_deg=seg_sep,
+                            angular_sep_deg=true_u_sep,
                             altitude_ft=prev_alt_ft + (ac.altitude_ft - prev_alt_ft) * u,
                             slant_range_km=prev_sky.slant_range_km + (sky_pos.slant_range_km - prev_sky.slant_range_km) * u,
                             ground_distance_km=prev_sky.ground_distance_km + (sky_pos.ground_distance_km - prev_sky.ground_distance_km) * u,
@@ -691,6 +730,8 @@ class TransitDetector:
                     moon,
                     disk_threshold,
                     alert_threshold,
+                    temperature_c=temperature_c,
+                    pressure_hpa=pressure_hpa,
                 )
 
             incoming_threshold = moon.angular_radius_deg + self.incoming_alert_margin_deg

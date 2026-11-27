@@ -17,6 +17,11 @@ adsb_url = "http://adsb.local:8090/data/aircraft.json"
 supplement_radius_nm = 45.0
 supplement_interval_s = 5.0
 
+# Fetch local cloud cover, temperature, and pressure via Open-Meteo (no API key required)
+# Used for live atmospheric refraction, fallback QNH, and cloud-cover Pushover filtering
+weather_enabled = true
+weather_interval_s = 600.0
+
 # Poll interval in seconds during live monitoring
 poll_interval_s = 1.0
 
@@ -66,6 +71,10 @@ pushover_max_lead_s = 60.0
 pushover_margin_deg = 0.25
 # Optional minimum apparent aircraft size (arcminutes) required to send a Pushover alert (0.0 = all)
 pushover_min_angular_arcmin = 0.0
+# Suppress Pushover alerts when optical sky obstruction (cloud cover / fog) exceeds this % (100.0 = never suppress)
+pushover_max_cloud_cover_pct = 85.0
+# Optional local-time quiet hours during which Pushover alerts are suppressed (e.g. "23:30-07:00")
+# pushover_quiet_hours = "23:30-07:00"
 
 # Cache directory for Skyfield ephemeris files (de421.bsp)
 ephemeris_dir = ".cache/skyfield"

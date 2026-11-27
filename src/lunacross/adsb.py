@@ -55,6 +55,7 @@ def parse_aircraft_payload(
     *,
     source: str = "local",
     geoid_undulation_m: float = 0.0,
+    fallback_qnh_hpa: float | None = None,
 ) -> AdsbSnapshot:
     """Parse a tar1090/readsb aircraft.json or v2 community API dictionary into an AdsbSnapshot."""
     raw_list = data.get("aircraft")
@@ -93,11 +94,16 @@ def parse_aircraft_payload(
             altitude_ft = float(alt_baro)
             altitude_source = "baro"
             nav_qnh = item.get("nav_qnh")
-            qnh_corr_ft = (
-                (float(nav_qnh) - 1013.25) * 27.3
+            eff_qnh = (
+                float(nav_qnh)
                 if _is_number(nav_qnh) and 940.0 <= float(nav_qnh) <= 1060.0
-                else 0.0
+                else (
+                    float(fallback_qnh_hpa)
+                    if fallback_qnh_hpa is not None and 940.0 <= float(fallback_qnh_hpa) <= 1060.0
+                    else None
+                )
             )
+            qnh_corr_ft = (eff_qnh - 1013.25) * 27.3 if eff_qnh is not None else 0.0
             altitude_m = (altitude_ft + qnh_corr_ft) * FEET_TO_METERS + geoid_undulation_m
         else:
             # Skip ground traffic ("ground") and aircraft without altitude
@@ -282,7 +288,12 @@ class AdsbClient:
     def close(self) -> None:
         self._client.close()
 
-    def fetch_snapshot(self, max_seen_pos_s: float = 30.0) -> AdsbSnapshot:
+    def fetch_snapshot(
+        self,
+        max_seen_pos_s: float = 30.0,
+        *,
+        fallback_qnh_hpa: float | None = None,
+    ) -> AdsbSnapshot:
         """Fetch live aircraft from local /data/aircraft.json and merge optional supplement."""
         primary: AdsbSnapshot | None = None
         primary_err: Exception | None = None
@@ -294,6 +305,7 @@ class AdsbClient:
                 max_seen_pos_s=max_seen_pos_s,
                 source="local",
                 geoid_undulation_m=self.geoid_undulation_m,
+                fallback_qnh_hpa=fallback_qnh_hpa,
             )
         except httpx.HTTPError as exc:
             primary_err = exc
@@ -314,6 +326,7 @@ class AdsbClient:
                         max_seen_pos_s=max_seen_pos_s,
                         source="supplement",
                         geoid_undulation_m=self.geoid_undulation_m,
+                        fallback_qnh_hpa=fallback_qnh_hpa,
                     )
                     self._cached_supplement_at = now_mono
                 except httpx.HTTPError:

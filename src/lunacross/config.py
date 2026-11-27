@@ -21,6 +21,8 @@ class Config:
     supplement_url: str | None = None
     supplement_radius_nm: float = 45.0
     supplement_interval_s: float = 5.0
+    weather_enabled: bool = True
+    weather_interval_s: float = 600.0
     poll_interval_s: float = 1.0
     alert_margin_deg: float = 0.5
     log_margin_deg: float = 5.0
@@ -41,6 +43,8 @@ class Config:
     pushover_max_lead_s: float = 60.0
     pushover_margin_deg: float = 0.25
     pushover_min_angular_arcmin: float = 0.0
+    pushover_max_cloud_cover_pct: float = 85.0
+    pushover_quiet_hours: str | None = None
     ephemeris_dir: str = ".cache/skyfield"
     top_n: int = 12
     web_port: int = 0
