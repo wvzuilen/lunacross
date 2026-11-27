@@ -13,6 +13,8 @@ from lunacross.geometry import SkyPosition
 from lunacross.moon import MoonPosition
 from lunacross.notifier import TransitNotifier, load_passes, prune_old_close_passes
 from lunacross.visualize import (
+    _lit_phase_path_d,
+    _moon_phase_svg,
     render_live_snapshot_svg,
     render_pass_html,
     render_pass_svg,
@@ -250,3 +252,28 @@ def test_prune_old_close_passes_retention(tmp_path) -> None:
 
     remaining_ids = [r.pass_id for r in load_passes(passes_path)]
     assert remaining_ids == ["old_transit", "old_near", "recent_close"]
+
+
+def test_lunar_phase_terminator_sweep_and_limb_rotation() -> None:
+    # Gibbous (85% lit -> f=0.85 > 0.5) must use sweep=1 on return arc so terminator bulges into left (-x) half
+    gibbous_d = _lit_phase_path_d(0.0, 0.0, 50.0, 0.85)
+    assert "A 35.00 50.00 0 0 1 0.00 -50.00 Z" in gibbous_d
+
+    # Crescent (15% lit -> f=0.15 < 0.5) must use sweep=0 on return arc so terminator curves into right (+x) half
+    crescent_d = _lit_phase_path_d(0.0, 0.0, 50.0, 0.15)
+    assert "A 35.00 50.00 0 0 0 0.00 -50.00 Z" in crescent_d
+
+    # Topocentric limb rotation (e.g. 226.2° CW from Zenith -> rotate(136.20 ...) around Moon center)
+    svg_frag = _moon_phase_svg(
+        100.0,
+        120.0,
+        40.0,
+        224.8,
+        "test",
+        illumination_pct=85.1,
+        bright_limb_angle_deg=226.2,
+        north_angle_deg=323.2,
+        tag="zoom",
+    )
+    assert "rotate(136.20 100.00 120.00)" in svg_frag
+    assert "rotate(323.20 100.00 120.00)" in svg_frag

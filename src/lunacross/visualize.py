@@ -10,7 +10,7 @@ from typing import Iterable
 from lunacross.config import Config
 from lunacross.detector import AircraftSighting, PassPoint, PassRecord
 from lunacross.geometry import aircraft_altaz, extrapolate_position, sky_tangent_offset_deg
-from lunacross.moon import MoonPosition, compass_direction
+from lunacross.moon import MoonPosition, compass_direction, compute_north_angle_deg
 from lunacross.weather import WeatherSnapshot
 
 _CLASS_COLORS = {
@@ -53,45 +53,127 @@ def _fmt_local_datetime(iso_utc: str) -> str:
         return iso_utc
 
 
-def _moon_phase_svg(cx: float, cy: float, r: float, phase_deg: float, uid: str) -> str:
-    """Render an illuminated Moon disc with accurate phase terminator shading."""
-    angle = phase_deg % 360.0
-    # Dark unlit base circle
-    parts = [
-        f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r:.2f}" fill="#1e293b" stroke="#cbd5e1" stroke-width="0.9" opacity="0.95"/>'
+def _lunar_maria_svg(cx: float, cy: float, r: float, north_angle_deg: float, opacity: float) -> str:
+    """Render recognizable near-side lunar maria rotated by topocentric Lunar North angle."""
+    if r < 7.0:
+        return ""
+    # Normalized selenographic coordinates (dx right, dy down when Lunar North is straight up)
+    maria_ellipses: list[tuple[float, float, float, float, float]] = [
+        (-0.22, -0.26, 0.26, 0.22, -15.0),  # Mare Imbrium
+        (0.16, -0.22, 0.17, 0.15, 10.0),    # Mare Serenitatis
+        (0.32, -0.02, 0.20, 0.16, 20.0),    # Mare Tranquillitatis
+        (0.62, -0.14, 0.11, 0.14, -10.0),   # Mare Crisium
+        (0.46, 0.20, 0.16, 0.19, 15.0),     # Mare Foecunditatis
+        (-0.46, 0.02, 0.24, 0.38, 12.0),    # Oceanus Procellarum
+        (-0.14, 0.34, 0.19, 0.15, -8.0),    # Mare Nubium
+        (-0.42, 0.36, 0.13, 0.12, 0.0),     # Mare Humorum
     ]
-    if 356.0 <= angle or angle <= 4.0:
-        # New Moon
-        return "".join(parts)
-    if 176.0 <= angle <= 184.0:
-        # Full Moon
-        parts.append(
-            f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r:.2f}" fill="#fef3c7" filter="url(#{uid}-glow)"/>'
+    shapes: list[str] = [
+        f'<g transform="rotate({north_angle_deg:.2f} {cx:.2f} {cy:.2f})" opacity="{opacity:.3f}">'
+    ]
+    for dx, dy, rx_n, ry_n, tilt in maria_ellipses:
+        ex = cx + dx * r
+        ey = cy + dy * r
+        erx = rx_n * r
+        ery = ry_n * r
+        shapes.append(
+            f'<ellipse cx="{ex:.2f}" cy="{ey:.2f}" rx="{erx:.2f}" ry="{ery:.2f}" '
+            f'transform="rotate({tilt:.1f} {ex:.2f} {ey:.2f})" fill="#64748b"/>'
         )
-        return "".join(parts)
+    # Subtle bright ray craters (Tycho in south, Copernicus mid-west)
+    shapes.append(
+        f'<circle cx="{cx - 0.08 * r:.2f}" cy="{cy + 0.58 * r:.2f}" r="{max(1.2, 0.035 * r):.2f}" fill="#ffffff" opacity="0.55"/>'
+    )
+    shapes.append(
+        f'<circle cx="{cx - 0.24 * r:.2f}" cy="{cy - 0.06 * r:.2f}" r="{max(1.0, 0.03 * r):.2f}" fill="#ffffff" opacity="0.45"/>'
+    )
+    shapes.append("</g>")
+    return "".join(shapes)
 
-    # Illuminated fraction geometry using two half-ellipses (semicircle limb + ellipse terminator)
-    waxing = angle < 180.0
-    # cos(phase): +1 at New, 0 at Quarter, -1 at Full
-    rx = r * abs(math.cos(math.radians(angle)))
-    # Outer limb sweep: right half (0->180) for waxing, left half (180->0) for waning
+
+def _lit_phase_path_d(cx: float, cy: float, r: float, illum_fraction: float) -> str:
+    """Build canonical SVG path (lit on the RIGHT / +x side) for illuminated fraction f in [0, 1]."""
+    f = max(0.0, min(1.0, illum_fraction))
     top_y = cy - r
     bot_y = cy + r
-    if waxing:
-        # Right semicircle from top to bottom
-        limb_arc = f"M {cx:.2f} {top_y:.2f} A {r:.2f} {r:.2f} 0 0 1 {cx:.2f} {bot_y:.2f}"
-        # Terminator from bottom back to top: sweep=1 if crescent (<90), sweep=0 if gibbous (>90)
-        sweep_term = 0 if angle > 90.0 else 1
-        term_arc = f"A {rx:.2f} {r:.2f} 0 0 {sweep_term} {cx:.2f} {top_y:.2f} Z"
-    else:
-        # Left semicircle from top to bottom
-        limb_arc = f"M {cx:.2f} {top_y:.2f} A {r:.2f} {r:.2f} 0 0 0 {cx:.2f} {bot_y:.2f}"
-        # Terminator from bottom back to top: sweep=1 if gibbous (<270), sweep=0 if crescent (>270)
-        sweep_term = 1 if angle < 270.0 else 0
-        term_arc = f"A {rx:.2f} {r:.2f} 0 0 {sweep_term} {cx:.2f} {top_y:.2f} Z"
+    # Outer sunlit semicircle from top (0, -r) via right (+r, 0) to bottom (0, +r): sweep=1
+    limb_arc = f"M {cx:.2f} {top_y:.2f} A {r:.2f} {r:.2f} 0 0 1 {cx:.2f} {bot_y:.2f}"
+    rx = r * abs(2.0 * f - 1.0)
+    if rx < 1e-3 * r:
+        return f"{limb_arc} L {cx:.2f} {top_y:.2f} Z"
+    # Return from bottom (0, +r) to top (0, -r):
+    # - Gibbous (f > 0.5): bulge into LEFT (-x) half -> angle increases (+90° -> +180° -> +270°) -> sweep=1
+    # - Crescent (f < 0.5): bulge into RIGHT (+x) half -> angle decreases (+90° -> 0° -> -90°) -> sweep=0
+    sweep_term = 1 if f > 0.5 else 0
+    return f"{limb_arc} A {rx:.2f} {r:.2f} 0 0 {sweep_term} {cx:.2f} {top_y:.2f} Z"
 
+
+def _moon_phase_svg(
+    cx: float,
+    cy: float,
+    r: float,
+    phase_deg: float,
+    uid: str,
+    *,
+    illumination_pct: float | None = None,
+    bright_limb_angle_deg: float | None = None,
+    north_angle_deg: float = 0.0,
+    tag: str = "m",
+) -> str:
+    """Render a realistic topocentric Moon disc with true sky tilt, limb darkening, and maria."""
+    angle = phase_deg % 360.0
+    if illumination_pct is not None:
+        f = max(0.0, min(1.0, illumination_pct / 100.0))
+    else:
+        f = 0.5 * (1.0 - math.cos(math.radians(angle)))
+
+    # Default bright-limb direction if not provided: right (90°) when waxing, left (270°) when waning
+    if bright_limb_angle_deg is None:
+        limb_cw = 90.0 if angle < 180.0 else 270.0
+    else:
+        limb_cw = bright_limb_angle_deg % 360.0
+
+    # Canonical path is lit at 90° CW from Up (+x right); rotate by (limb_cw - 90°)
+    rot_deg = limb_cw - 90.0
+    disc_clip_id = f"{uid}-disc-{tag}"
+    lit_clip_id = f"{uid}-lit-{tag}"
+
+    parts = [
+        f'<defs><clipPath id="{disc_clip_id}"><circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r:.2f}"/></clipPath>',
+    ]
+    if f > 0.005:
+        if f >= 0.995:
+            parts.append(
+                f'<clipPath id="{lit_clip_id}"><circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r + 0.5:.2f}"/></clipPath>'
+            )
+        else:
+            path_d = _lit_phase_path_d(cx, cy, r, f)
+            parts.append(
+                f'<clipPath id="{lit_clip_id}"><path d="{path_d}" transform="rotate({rot_deg:.2f} {cx:.2f} {cy:.2f})"/></clipPath>'
+            )
+    parts.append("</defs>")
+
+    # Subtle outer lunar glow scaled by illumination
+    if f > 0.05:
+        parts.append(
+            f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r * 1.04:.2f}" fill="#f8fafc" '
+            f'opacity="{0.08 + 0.20 * f:.2f}" filter="url(#{uid}-glow)"/>'
+        )
+
+    # Disc interior: earthshine night side + sunlit hemisphere with maria
+    parts.append(f'<g clip-path="url(#{disc_clip_id})">')
+    parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r:.2f}" fill="url(#{uid}-earthshine)"/>')
+    parts.append(_lunar_maria_svg(cx, cy, r, north_angle_deg, opacity=0.06))
+
+    if f > 0.005:
+        parts.append(f'<g clip-path="url(#{lit_clip_id})">')
+        parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r:.2f}" fill="url(#{uid}-lunar-lit)"/>')
+        parts.append(_lunar_maria_svg(cx, cy, r, north_angle_deg, opacity=0.23))
+        parts.append("</g>")
+
+    parts.append("</g>")
     parts.append(
-        f'<path d="{limb_arc} {term_arc}" fill="#fef3c7" filter="url(#{uid}-glow)"/>'
+        f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r:.2f}" fill="none" stroke="#cbd5e1" stroke-width="0.85" stroke-opacity="0.5"/>'
     )
     return "".join(parts)
 
@@ -110,6 +192,17 @@ def _svg_defs(uid: str, left_clip: tuple[float, float, float, float], right_clip
     <stop offset="0%" stop-color="#0f172a"/>
     <stop offset="100%" stop-color="#020617"/>
   </linearGradient>
+  <radialGradient id="{uid}-earthshine" cx="50%" cy="50%" r="52%">
+    <stop offset="0%" stop-color="#1e293b"/>
+    <stop offset="82%" stop-color="#0f172a"/>
+    <stop offset="100%" stop-color="#1e293b"/>
+  </radialGradient>
+  <radialGradient id="{uid}-lunar-lit" cx="50%" cy="50%" r="52%">
+    <stop offset="0%" stop-color="#fefce8"/>
+    <stop offset="68%" stop-color="#f1f5f9"/>
+    <stop offset="90%" stop-color="#cbd5e1"/>
+    <stop offset="100%" stop-color="#94a3b8"/>
+  </radialGradient>
   <filter id="{uid}-glow" x="-40%" y="-40%" width="180%" height="180%">
     <feGaussianBlur stdDeviation="2.5" result="blur"/>
     <feMerge>
@@ -140,6 +233,10 @@ def _render_horizon_panel(
     moon_alt_deg: float,
     moon_az_deg: float,
     moon_phase_deg: float,
+    moon_illumination_pct: float | None = None,
+    moon_bright_limb_deg: float | None = None,
+    moon_north_angle_deg: float = 0.0,
+    moon_phase_badge: str | None = None,
     moon_label: str,
     body_elements: str,
 ) -> str:
@@ -223,7 +320,19 @@ def _render_horizon_panel(
 
     # Moon marker in wide horizon view
     mx, my = map_pt(moon_alt_deg, moon_az_deg)
-    parts.append(_moon_phase_svg(mx, my, 9.0, moon_phase_deg, uid))
+    parts.append(
+        _moon_phase_svg(
+            mx,
+            my,
+            9.5,
+            moon_phase_deg,
+            uid,
+            illumination_pct=moon_illumination_pct,
+            bright_limb_angle_deg=moon_bright_limb_deg,
+            north_angle_deg=moon_north_angle_deg,
+            tag="horiz",
+        )
+    )
     parts.append(
         f'<text x="{mx + 14:.1f}" y="{my + 4:.1f}" fill="#fef3c7" font-size="11" '
         f'font-weight="600" font-family="system-ui, sans-serif">{html.escape(moon_label)}</text>'
@@ -231,6 +340,32 @@ def _render_horizon_panel(
 
     # Custom aircraft/track body elements
     parts.append(body_elements)
+
+    # Enlarged topocentric Moon phase preview inset in top-right sky corner
+    if moon_phase_badge:
+        bx, by, bw, bh = x + w - 98.0, y + 10.0, 88.0, 88.0
+        parts.append(
+            f'<rect x="{bx:.1f}" y="{by:.1f}" width="{bw:.1f}" height="{bh:.1f}" rx="8" '
+            f'fill="#020617" fill-opacity="0.78" stroke="#334155" stroke-width="0.9"/>'
+        )
+        parts.append(
+            _moon_phase_svg(
+                bx + bw / 2.0,
+                by + 36.0,
+                25.0,
+                moon_phase_deg,
+                uid,
+                illumination_pct=moon_illumination_pct,
+                bright_limb_angle_deg=moon_bright_limb_deg,
+                north_angle_deg=moon_north_angle_deg,
+                tag="inset",
+            )
+        )
+        parts.append(
+            f'<text x="{bx + bw / 2.0:.1f}" y="{by + bh - 8.0:.1f}" text-anchor="middle" '
+            f'fill="#cbd5e1" font-size="9.5" font-family="ui-monospace, monospace">{html.escape(moon_phase_badge)}</text>'
+        )
+
     parts.append("</g>")
     parts.append(
         f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" rx="8" fill="none" stroke="#334155" stroke-width="1.2"/>'
@@ -248,6 +383,9 @@ def _render_zoom_panel(
     half_fov_deg: float,
     moon_diameter_deg: float,
     moon_phase_deg: float,
+    moon_illumination_pct: float | None = None,
+    moon_bright_limb_deg: float | None = None,
+    moon_north_angle_deg: float = 0.0,
     title: str,
     footer_lines: list[str],
     body_elements: str,
@@ -284,8 +422,20 @@ def _render_zoom_panel(
         f'<line x1="{cx:.1f}" y1="{y + 28:.1f}" x2="{cx:.1f}" y2="{y + h - 46:.1f}" stroke="#1e293b" stroke-width="0.9"/>'
     )
 
-    # Moon rendered to exact angular scale
-    parts.append(_moon_phase_svg(cx, cy, moon_r_px, moon_phase_deg, uid))
+    # Moon rendered to exact angular scale and topocentric orientation
+    parts.append(
+        _moon_phase_svg(
+            cx,
+            cy,
+            moon_r_px,
+            moon_phase_deg,
+            uid,
+            illumination_pct=moon_illumination_pct,
+            bright_limb_angle_deg=moon_bright_limb_deg,
+            north_angle_deg=moon_north_angle_deg,
+            tag="zoom",
+        )
+    )
 
     # Aircraft track / positions
     parts.append(body_elements)
@@ -434,6 +584,17 @@ def render_pass_svg(record: PassRecord, *, width: int = 1120, height: int = 540)
         f"Moon: {record.moon_phase_name} ({record.moon_illumination_pct:.0f}% lit) | Track pts: {len(track)}",
     ]
 
+    rec_north = (
+        record.moon_north_angle_deg
+        if record.moon_north_angle_deg is not None
+        else compute_north_angle_deg(record.observer_lat, record.moon_alt_deg, record.moon_az_deg)
+    )
+    rec_limb = (
+        record.moon_bright_limb_deg
+        if record.moon_bright_limb_deg is not None
+        else (rec_north + (90.0 if (record.moon_phase_deg % 360.0) < 180.0 else 270.0)) % 360.0
+    )
+
     return "\n".join(
         [
             f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" style="background:#020617;border-radius:10px;display:block;">',
@@ -453,6 +614,10 @@ def render_pass_svg(record: PassRecord, *, width: int = 1120, height: int = 540)
                 moon_alt_deg=record.moon_alt_deg,
                 moon_az_deg=record.moon_az_deg,
                 moon_phase_deg=record.moon_phase_deg,
+                moon_illumination_pct=record.moon_illumination_pct,
+                moon_bright_limb_deg=rec_limb,
+                moon_north_angle_deg=rec_north,
+                moon_phase_badge=f"{record.moon_illumination_pct:.0f}% lit",
                 moon_label=moon_lbl,
                 body_elements="\n".join(left_body),
             ),
@@ -465,6 +630,9 @@ def render_pass_svg(record: PassRecord, *, width: int = 1120, height: int = 540)
                 half_fov_deg=half_fov,
                 moon_diameter_deg=record.moon_angular_diameter_deg,
                 moon_phase_deg=record.moon_phase_deg,
+                moon_illumination_pct=record.moon_illumination_pct,
+                moon_bright_limb_deg=rec_limb,
+                moon_north_angle_deg=rec_north,
                 title="Zoomed Lunar View",
                 footer_lines=footer_lines,
                 body_elements="\n".join(right_body),
@@ -646,6 +814,10 @@ def render_live_snapshot_svg(
                 moon_alt_deg=moon.altitude_deg,
                 moon_az_deg=moon.azimuth_deg,
                 moon_phase_deg=moon.phase_deg,
+                moon_illumination_pct=moon.illumination_pct,
+                moon_bright_limb_deg=moon.effective_bright_limb_deg,
+                moon_north_angle_deg=moon.north_angle_deg,
+                moon_phase_badge=f"{moon.illumination_pct:.0f}% lit",
                 moon_label=moon_lbl,
                 body_elements="\n".join(left_body),
             ),
@@ -658,6 +830,9 @@ def render_live_snapshot_svg(
                 half_fov_deg=half_fov,
                 moon_diameter_deg=moon.angular_diameter_deg,
                 moon_phase_deg=moon.phase_deg,
+                moon_illumination_pct=moon.illumination_pct,
+                moon_bright_limb_deg=moon.effective_bright_limb_deg,
+                moon_north_angle_deg=moon.north_angle_deg,
                 title="Zoomed Lunar View (±6°)",
                 footer_lines=footer_lines,
                 body_elements="\n".join(right_body),

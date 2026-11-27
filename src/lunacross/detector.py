@@ -17,7 +17,7 @@ from lunacross.geometry import (
     extrapolate_position,
     segment_closest_approach,
 )
-from lunacross.moon import MoonPosition
+from lunacross.moon import MoonPosition, compute_north_angle_deg
 
 SightingStatus = Literal["TRANSIT", "NEAR_MISS", "INCOMING", "TRACKING"]
 EventType = Literal["TRANSIT", "NEAR_MISS", "INCOMING"]
@@ -117,6 +117,8 @@ class PassRecord:
     moon_phase_name: str
     track: list[PassPoint]
     moon_phase_deg: float = 180.0
+    moon_bright_limb_deg: float | None = None
+    moon_north_angle_deg: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -145,6 +147,12 @@ class PassRecord:
             "moon_angular_diameter_deg": round(self.moon_angular_diameter_deg, 4),
             "moon_illumination_pct": round(self.moon_illumination_pct, 1),
             "moon_phase_deg": round(self.moon_phase_deg, 2),
+            "moon_bright_limb_deg": (
+                round(self.moon_bright_limb_deg, 2) if self.moon_bright_limb_deg is not None else None
+            ),
+            "moon_north_angle_deg": (
+                round(self.moon_north_angle_deg, 2) if self.moon_north_angle_deg is not None else None
+            ),
             "moon_phase_name": self.moon_phase_name,
             "track": [pt.to_dict() for pt in self.track],
         }
@@ -152,16 +160,28 @@ class PassRecord:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PassRecord:
         illum = float(data["moon_illumination_pct"])
+        obs_lat = float(data["observer_lat"])
+        m_alt = float(data["moon_alt_deg"])
+        m_az = float(data["moon_az_deg"])
         raw_phase_deg = data.get("moon_phase_deg")
         if raw_phase_deg is not None:
             phase_deg = float(raw_phase_deg)
         else:
-            # Reconstruct approximate phase angle from illumination + phase_name for legacy records
             frac = max(0.0, min(1.0, illum / 100.0))
-            # frac = (1 - cos(phase)) / 2  =>  cos(phase) = 1 - 2 * frac
             base_ang = math.degrees(math.acos(max(-1.0, min(1.0, 1.0 - 2.0 * frac))))
             phase_name = str(data.get("moon_phase_name", ""))
             phase_deg = (360.0 - base_ang) % 360.0 if "Waning" in phase_name or "Last" in phase_name else base_ang
+
+        raw_north = data.get("moon_north_angle_deg")
+        north_deg = float(raw_north) if raw_north is not None else compute_north_angle_deg(obs_lat, m_alt, m_az)
+
+        raw_limb = data.get("moon_bright_limb_deg")
+        if raw_limb is not None:
+            limb_deg = float(raw_limb)
+        else:
+            # Celestial West (90° CW from North on sky) for waxing, Celestial East (270° CW) for waning
+            limb_deg = (north_deg + (90.0 if (phase_deg % 360.0) < 180.0 else 270.0)) % 360.0
+
         return cls(
             pass_id=str(data["pass_id"]),
             flight=str(data["flight"]),
@@ -169,7 +189,7 @@ class PassRecord:
             registration=data.get("registration"),
             aircraft_type=data.get("aircraft_type"),
             category=data.get("category"),
-            observer_lat=float(data["observer_lat"]),
+            observer_lat=obs_lat,
             observer_lon=float(data["observer_lon"]),
             observer_elevation_m=float(data["observer_elevation_m"]),
             start_utc=str(data["start_utc"]),
@@ -183,13 +203,15 @@ class PassRecord:
             closest_aircraft_az_deg=float(data["closest_aircraft_az_deg"]),
             closest_altitude_ft=float(data["closest_altitude_ft"]),
             closest_slant_range_km=float(data["closest_slant_range_km"]),
-            moon_alt_deg=float(data["moon_alt_deg"]),
-            moon_az_deg=float(data["moon_az_deg"]),
+            moon_alt_deg=m_alt,
+            moon_az_deg=m_az,
             moon_angular_diameter_deg=float(data["moon_angular_diameter_deg"]),
             moon_illumination_pct=illum,
             moon_phase_name=str(data["moon_phase_name"]),
             track=[PassPoint.from_dict(pt) for pt in data.get("track", [])],
             moon_phase_deg=phase_deg,
+            moon_bright_limb_deg=limb_deg,
+            moon_north_angle_deg=north_deg,
         )
 
 
@@ -245,6 +267,8 @@ class _ActivePass:
     moon_angular_diameter_deg: float
     moon_illumination_pct: float
     moon_phase_deg: float
+    moon_bright_limb_deg: float | None
+    moon_north_angle_deg: float
     moon_phase_name: str
     track: list[PassPoint]
     outside_count: int = 0
@@ -450,6 +474,8 @@ class TransitDetector:
             moon_phase_name=active.moon_phase_name,
             track=list(active.track),
             moon_phase_deg=active.moon_phase_deg,
+            moon_bright_limb_deg=active.moon_bright_limb_deg,
+            moon_north_angle_deg=active.moon_north_angle_deg,
         )
 
     def _update_pass_tracking(
@@ -540,6 +566,8 @@ class TransitDetector:
                 moon_angular_diameter_deg=moon.angular_diameter_deg,
                 moon_illumination_pct=moon.illumination_pct,
                 moon_phase_deg=moon.phase_deg,
+                moon_bright_limb_deg=moon.effective_bright_limb_deg,
+                moon_north_angle_deg=moon.north_angle_deg,
                 moon_phase_name=moon.phase_name,
                 track=track,
             )
@@ -570,6 +598,8 @@ class TransitDetector:
                 active.moon_angular_diameter_deg = moon.angular_diameter_deg
                 active.moon_illumination_pct = moon.illumination_pct
                 active.moon_phase_deg = moon.phase_deg
+                active.moon_bright_limb_deg = moon.effective_bright_limb_deg
+                active.moon_north_angle_deg = moon.north_angle_deg
                 active.moon_phase_name = moon.phase_name
                 crossed, classification = self._classify_pass(
                     active.min_sep_deg, disk_threshold_deg, alert_threshold_deg

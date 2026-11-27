@@ -37,6 +37,9 @@ def test_moon_tracker_fixed_timestamp(tmp_path) -> None:
     pred_alt, pred_az = pos.at_offset(60.0)
     assert pred_alt == pytest.approx(pos_60.altitude_deg, abs=0.002)
     assert pred_az == pytest.approx(pos_60.azimuth_deg, abs=0.002)
+    assert pos.bright_limb_angle_deg is not None
+    assert 0.0 <= pos.effective_bright_limb_deg < 360.0
+    assert 0.0 <= pos.north_angle_deg < 360.0
 
 
 def test_compass_and_phase_helpers() -> None:

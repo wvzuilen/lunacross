@@ -59,6 +59,35 @@ def moon_phase_name(phase_deg: float) -> str:
     return "Waning Crescent"
 
 
+def compute_north_angle_deg(obs_lat_deg: float, moon_alt_deg: float, moon_az_deg: float) -> float:
+    """Return clockwise angle on the sky from local Zenith (Up) to Celestial/Lunar North."""
+    lat_r = math.radians(obs_lat_deg)
+    alt_r = math.radians(moon_alt_deg)
+    az_r = math.radians(moon_az_deg)
+    x_right = -math.cos(lat_r) * math.sin(az_r)
+    y_up = math.cos(alt_r) * math.sin(lat_r) - math.sin(alt_r) * math.cos(lat_r) * math.cos(az_r)
+    if abs(x_right) < 1e-12 and abs(y_up) < 1e-12:
+        return 0.0
+    return math.degrees(math.atan2(x_right, y_up)) % 360.0
+
+
+def compute_bright_limb_angle_deg(
+    moon_alt_deg: float,
+    moon_az_deg: float,
+    sun_alt_deg: float,
+    sun_az_deg: float,
+) -> float:
+    """Return clockwise angle on the sky from local Zenith (Up) toward the sunlit lunar limb."""
+    phi_m = math.radians(moon_alt_deg)
+    phi_s = math.radians(sun_alt_deg)
+    d_az = math.radians(sun_az_deg - moon_az_deg)
+    x_right = math.cos(phi_s) * math.sin(d_az)
+    y_up = math.cos(phi_m) * math.sin(phi_s) - math.sin(phi_m) * math.cos(phi_s) * math.cos(d_az)
+    if abs(x_right) < 1e-12 and abs(y_up) < 1e-12:
+        return 90.0
+    return math.degrees(math.atan2(x_right, y_up)) % 360.0
+
+
 @dataclass(frozen=True, slots=True)
 class MoonPosition:
     """Topocentric position, angular size, and sky drift rate of the Moon at an instant."""
@@ -75,6 +104,16 @@ class MoonPosition:
     is_above_horizon: bool
     alt_rate_deg_s: float = 0.0
     az_rate_deg_s: float = 0.0
+    bright_limb_angle_deg: float | None = None
+    north_angle_deg: float = 0.0
+
+    @property
+    def effective_bright_limb_deg(self) -> float:
+        """Return clockwise angle from Zenith to bright limb, falling back to phase side."""
+        if self.bright_limb_angle_deg is not None:
+            return self.bright_limb_angle_deg % 360.0
+        base = 90.0 if (self.phase_deg % 360.0) < 180.0 else 270.0
+        return (self.north_angle_deg + base) % 360.0
 
     def at_offset(self, dt_s: float) -> tuple[float, float]:
         """Return predicted (altitude_deg, azimuth_deg) of the Moon dt_s seconds later."""
@@ -146,6 +185,11 @@ class MoonTracker:
             temperature_C=temperature_c,
             pressure_mbar=pressure_hpa,
         )
+        sun_apparent = self.observer.at(t).observe(self.sun).apparent()
+        sun_alt, sun_az, _ = sun_apparent.altaz(
+            temperature_C=temperature_c,
+            pressure_mbar=pressure_hpa,
+        )
 
         apparent_next = self.observer.at(t_next).observe(self.moon).apparent()
         alt_next, az_next, _ = apparent_next.altaz(
@@ -159,6 +203,14 @@ class MoonTracker:
         phase_deg = float(almanac.moon_phase(self.eph, t).degrees) % 360.0
         alt_deg = float(alt.degrees)
         az_deg = float(az.degrees) % 360.0
+
+        north_ang = compute_north_angle_deg(self.latitude, alt_deg, az_deg)
+        bright_limb_ang = compute_bright_limb_angle_deg(
+            alt_deg,
+            az_deg,
+            float(sun_alt.degrees),
+            float(sun_az.degrees) % 360.0,
+        )
 
         alt_rate = (float(alt_next.degrees) - alt_deg) / _VELOCITY_STEP_S
         d_az = ((float(az_next.degrees) - az_deg + 180.0) % 360.0) - 180.0
@@ -177,6 +229,8 @@ class MoonTracker:
             is_above_horizon=alt_deg > 0.0,
             alt_rate_deg_s=alt_rate,
             az_rate_deg_s=az_rate,
+            bright_limb_angle_deg=bright_limb_ang,
+            north_angle_deg=north_ang,
         )
 
     def next_rise_set(self, dt: datetime | None = None) -> MoonRiseSet:

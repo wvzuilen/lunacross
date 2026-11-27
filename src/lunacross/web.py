@@ -468,6 +468,9 @@ class _Handler(BaseHTTPRequestHandler):
                         "azimuth_deg": round(moon.azimuth_deg, 3),
                         "angular_diameter_deg": round(moon.angular_diameter_deg, 4),
                         "illumination_pct": round(moon.illumination_pct, 1),
+                        "phase_deg": round(moon.phase_deg, 2),
+                        "bright_limb_deg": round(moon.effective_bright_limb_deg, 1),
+                        "north_angle_deg": round(moon.north_angle_deg, 1),
                         "phase_name": moon.phase_name,
                         "is_above_horizon": moon.is_above_horizon,
                     }
