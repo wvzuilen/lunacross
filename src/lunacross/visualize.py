@@ -37,6 +37,72 @@ def _wrap_az_delta(az_deg: float, center_az_deg: float) -> float:
     return ((az_deg - center_az_deg + 180.0) % 360.0) - 180.0
 
 
+def _boxes_overlap(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+    pad: float = 3.0,
+) -> bool:
+    return not (
+        a[2] + pad < b[0]
+        or b[2] + pad < a[0]
+        or a[3] + pad < b[1]
+        or b[3] + pad < a[1]
+    )
+
+
+def _place_non_overlapping_label(
+    px: float,
+    py: float,
+    text: str,
+    placed: list[tuple[float, float, float, float]],
+    bounds: tuple[float, float, float, float],
+) -> tuple[float, float, str]:
+    """Choose a non-overlapping (x, y, text_anchor) around (px, py) within panel bounds."""
+    est_w = max(28.0, len(text) * 6.4)
+    est_h = 13.0
+    bx0, by0, bx1, by1 = bounds
+
+    candidates: list[tuple[float, float, str, tuple[float, float, float, float]]] = [
+        # Right of dot (default)
+        (px + 8.0, py + 3.5, "start", (px + 8.0, py - 9.0, px + 8.0 + est_w, py + 4.0)),
+        # Above-right
+        (px + 7.0, py - 9.0, "start", (px + 7.0, py - 21.0, px + 7.0 + est_w, py - 8.0)),
+        # Left of dot
+        (px - 8.0, py + 3.5, "end", (px - 8.0 - est_w, py - 9.0, px - 8.0, py + 4.0)),
+        # Below-right
+        (px + 7.0, py + 16.0, "start", (px + 7.0, py + 4.0, px + 7.0 + est_w, py + 17.0)),
+        # Above-left
+        (px - 7.0, py - 9.0, "end", (px - 7.0 - est_w, py - 21.0, px - 7.0, py - 8.0)),
+        # Below-left
+        (px - 7.0, py + 16.0, "end", (px - 7.0 - est_w, py + 4.0, px - 7.0, py + 17.0)),
+    ]
+
+    for tx, ty, anchor, box in candidates:
+        in_bounds = box[0] >= bx0 + 4.0 and box[2] <= bx1 - 4.0 and box[1] >= by0 + 4.0 and box[3] <= by1 - 4.0
+        if in_bounds and not any(_boxes_overlap(box, other) for other in placed):
+            placed.append(box)
+            return tx, ty, anchor
+
+    # Fallback: pick candidate with fewest overlaps
+    best = min(
+        candidates,
+        key=lambda c: sum(1 for other in placed if _boxes_overlap(c[3], other)),
+    )
+    placed.append(best[3])
+    return best[0], best[1], best[2]
+
+
+def _arrowhead_svg(x1: float, y1: float, x2: float, y2: float, color: str, size: float = 6.5) -> str:
+    if math.hypot(x2 - x1, y2 - y1) < 3.0:
+        return ""
+    ang = math.atan2(y2 - y1, x2 - x1)
+    a1x = x2 - size * math.cos(ang - 0.45)
+    a1y = y2 - size * math.sin(ang - 0.45)
+    a2x = x2 - size * math.cos(ang + 0.45)
+    a2y = y2 - size * math.sin(ang + 0.45)
+    return f'<polygon points="{x2:.1f},{y2:.1f} {a1x:.1f},{a1y:.1f} {a2x:.1f},{a2y:.1f}" fill="{color}" opacity="0.85"/>'
+
+
 def _fmt_local_time(iso_utc: str) -> str:
     try:
         dt = datetime.fromisoformat(iso_utc).astimezone()
@@ -335,7 +401,8 @@ def _render_horizon_panel(
     )
     parts.append(
         f'<text x="{mx + 14:.1f}" y="{my + 4:.1f}" fill="#fef3c7" font-size="11" '
-        f'font-weight="600" font-family="system-ui, sans-serif">{html.escape(moon_label)}</text>'
+        f'font-weight="600" font-family="system-ui, sans-serif" '
+        f'paint-order="stroke" stroke="#020617" stroke-width="3.5" stroke-linejoin="round">{html.escape(moon_label)}</text>'
     )
 
     # Custom aircraft/track body elements
@@ -414,12 +481,21 @@ def _render_zoom_panel(
             f'<text x="{cx + 4:.1f}" y="{cy - rr + 11:.1f}" fill="#475569" font-size="9" font-family="ui-monospace, monospace">{deg:.0f}°</text>'
         )
 
-    # Crosshair axes (East/West, Up/Down)
+    # Crosshair axes (East/West, Up/Down) + subtle orientation labels
     parts.append(
         f'<line x1="{x + 12:.1f}" y1="{cy:.1f}" x2="{x + w - 12:.1f}" y2="{cy:.1f}" stroke="#1e293b" stroke-width="0.9"/>'
     )
     parts.append(
         f'<line x1="{cx:.1f}" y1="{y + 28:.1f}" x2="{cx:.1f}" y2="{y + h - 46:.1f}" stroke="#1e293b" stroke-width="0.9"/>'
+    )
+    parts.append(
+        f'<text x="{cx + 5:.1f}" y="{y + 37:.1f}" fill="#475569" font-size="9" font-family="ui-monospace, monospace">+Alt</text>'
+    )
+    parts.append(
+        f'<text x="{x + 14:.1f}" y="{cy - 4:.1f}" fill="#475569" font-size="9" font-family="ui-monospace, monospace">-Az</text>'
+    )
+    parts.append(
+        f'<text x="{x + w - 14:.1f}" y="{cy - 4:.1f}" text-anchor="end" fill="#475569" font-size="9" font-family="ui-monospace, monospace">+Az</text>'
     )
 
     # Moon rendered to exact angular scale and topocentric orientation
@@ -693,6 +769,18 @@ def render_live_snapshot_svg(
     left_body: list[str] = []
     right_body: list[str] = []
 
+    # Reserve bounding boxes for Moon marker + label and top-right phase preview inset to prevent overlaps
+    moon_px, moon_py = map_left(moon.altitude_deg, moon.azimuth_deg)
+    left_bounds = (left_x, left_y, left_x + left_w, left_y + left_h - 22.0)
+    left_placed: list[tuple[float, float, float, float]] = [
+        (moon_px - 12.0, moon_py - 12.0, moon_px + 54.0, moon_py + 12.0),
+        (left_x + left_w - 102.0, left_y + 6.0, left_x + left_w - 6.0, left_y + 102.0),
+    ]
+    right_bounds = (right_x, right_y + 26.0, right_x + right_w, right_y + right_h - 42.0)
+    right_placed: list[tuple[float, float, float, float]] = [
+        (rcx - 14.0, rcy - 14.0, rcx + 14.0, rcy + 14.0),
+    ]
+
     for s in sightings_list:
         ac = s.aircraft
         if s.sky_pos.altitude_deg <= -1.0:
@@ -723,7 +811,7 @@ def render_live_snapshot_svg(
                 f'<polyline points="{rz_str}" fill="none" stroke="{color}" stroke-width="1.8" opacity="0.7"/>'
             )
 
-        # Future trajectory (dashed)
+        # Future trajectory (dashed + direction arrowhead)
         if forecast_s > 0.0 and ac.ground_speed_kt and ac.track_deg is not None and ac.ground_speed_kt > 20.0:
             fut_coords: list[tuple[float, float, float]] = [(s.sky_pos.altitude_deg, s.sky_pos.azimuth_deg, 0.0)]
             for step in range(5, int(forecast_s) + 1, 5):
@@ -750,46 +838,65 @@ def render_live_snapshot_svg(
                 if sky_f.altitude_deg > -2.0:
                     fut_coords.append((sky_f.altitude_deg, sky_f.azimuth_deg, float(step)))
             if len(fut_coords) >= 2:
-                f_str = " ".join(
-                    f"{px:.1f},{py:.1f}" for px, py in (map_left(a, z) for a, z, _ in fut_coords)
-                )
+                left_fut_pts = [map_left(a, z) for a, z, _ in fut_coords]
+                f_str = " ".join(f"{px:.1f},{py:.1f}" for px, py in left_fut_pts)
                 left_body.append(
                     f'<polyline points="{f_str}" fill="none" stroke="{color}" stroke-width="1.4" stroke-dasharray="4 4" opacity="0.75"/>'
                 )
-                rf_str = " ".join(
-                    f"{zx:.1f},{zy:.1f}" for zx, zy in (map_right_at(a, z, dt_s) for a, z, dt_s in fut_coords)
+                left_body.append(
+                    _arrowhead_svg(
+                        left_fut_pts[-2][0],
+                        left_fut_pts[-2][1],
+                        left_fut_pts[-1][0],
+                        left_fut_pts[-1][1],
+                        color,
+                    )
                 )
+                right_fut_pts = [map_right_at(a, z, dt_s) for a, z, dt_s in fut_coords]
+                rf_str = " ".join(f"{zx:.1f},{zy:.1f}" for zx, zy in right_fut_pts)
                 right_body.append(
                     f'<polyline points="{rf_str}" fill="none" stroke="{color}" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.8"/>'
                 )
+                right_body.append(
+                    _arrowhead_svg(
+                        right_fut_pts[-2][0],
+                        right_fut_pts[-2][1],
+                        right_fut_pts[-1][0],
+                        right_fut_pts[-1][1],
+                        color,
+                    )
+                )
 
-        # Current position dot + label
+        # Current position dot + non-overlapping haloed label
         ax_px, ay_px = map_left(s.sky_pos.altitude_deg, s.sky_pos.azimuth_deg)
         left_body.append(f'<circle cx="{ax_px:.1f}" cy="{ay_px:.1f}" r="4.0" fill="{color}" stroke="#0f172a" stroke-width="1.2"/>')
-        left_body.append(
-            f'<text x="{ax_px + 7:.1f}" y="{ay_px + 3:.1f}" fill="#e2e8f0" font-size="10.5" font-weight="600" font-family="ui-monospace, monospace">'
-            f'{html.escape(ac.flight)} ({s.angular_sep_deg:.1f}°)</text>'
-        )
+        if left_x <= ax_px <= left_x + left_w and left_y <= ay_px <= left_y + left_h:
+            lbl_txt = f"{ac.flight} ({s.angular_sep_deg:.1f}°)"
+            tx, ty, anchor = _place_non_overlapping_label(ax_px, ay_px, lbl_txt, left_placed, left_bounds)
+            left_body.append(
+                f'<text x="{tx:.1f}" y="{ty:.1f}" text-anchor="{anchor}" fill="#e2e8f0" font-size="10.5" '
+                f'font-weight="600" font-family="ui-monospace, monospace" '
+                f'paint-order="stroke" stroke="#020617" stroke-width="3.5" stroke-linejoin="round">'
+                f'{html.escape(lbl_txt)}</text>'
+            )
 
         zx_px, zy_px = map_right_at(s.sky_pos.altitude_deg, s.sky_pos.azimuth_deg, 0.0)
         right_body.append(f'<circle cx="{zx_px:.1f}" cy="{zy_px:.1f}" r="4.0" fill="{color}" stroke="#0f172a" stroke-width="1.2"/>')
-        right_body.append(
-            f'<text x="{zx_px + 7:.1f}" y="{zy_px + 3:.1f}" fill="#e2e8f0" font-size="10" font-family="ui-monospace, monospace">{html.escape(ac.flight)}</text>'
-        )
+        if right_x <= zx_px <= right_x + right_w and right_y <= zy_px <= right_y + right_h:
+            ztx, zty, zanchor = _place_non_overlapping_label(zx_px, zy_px, ac.flight, right_placed, right_bounds)
+            right_body.append(
+                f'<text x="{ztx:.1f}" y="{zty:.1f}" text-anchor="{zanchor}" fill="#e2e8f0" font-size="10" '
+                f'font-family="ui-monospace, monospace" paint-order="stroke" stroke="#020617" stroke-width="3.5" stroke-linejoin="round">'
+                f'{html.escape(ac.flight)}</text>'
+            )
 
     local_str = moon.timestamp_utc.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     header_title = f"LunaCross Live Sky View — {local_str}"
-    wx_suffix = (
-        f" | Sky: {weather.condition_label}, {weather.temperature_c:+.1f}°C"
-        if weather is not None
-        else ""
-    )
     header_sub = (
         f"Observer {cfg.latitude:.4f}°N, {cfg.longitude:.4f}°E | "
-        f"Moon {moon.altitude_deg:+.1f}° / {moon.azimuth_deg:.1f}° ({compass_direction(moon.azimuth_deg)}) | "
-        f"Airborne tracked: {len(sightings_list)}{wx_suffix}"
+        f"Moon {moon.altitude_deg:+.1f}° / {moon.azimuth_deg:.1f}° ({compass_direction(moon.azimuth_deg)})"
     )
-    moon_lbl = f"Moon ({moon.altitude_deg:+.1f}° / {moon.azimuth_deg:.0f}° {compass_direction(moon.azimuth_deg)})"
+    moon_lbl = "Moon"
     footer_lines = [
         f"Moon: {moon.phase_name} ({moon.illumination_pct:.1f}% lit, Ø {moon.angular_diameter_deg:.3f}°)",
         f"Solid = observed track | Dashed = +{forecast_s:.0f}s forecast",
@@ -833,7 +940,7 @@ def render_live_snapshot_svg(
                 moon_illumination_pct=moon.illumination_pct,
                 moon_bright_limb_deg=moon.effective_bright_limb_deg,
                 moon_north_angle_deg=moon.north_angle_deg,
-                title="Zoomed Lunar View (±6°)",
+                title="Zoomed Lunar View",
                 footer_lines=footer_lines,
                 body_elements="\n".join(right_body),
             ),

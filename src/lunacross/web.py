@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from lunacross.config import Config
 from lunacross.detector import AircraftSighting, PassPoint, PassRecord
-from lunacross.moon import MoonPosition
+from lunacross.moon import MoonPosition, compass_direction
 from lunacross.notifier import load_passes
 from lunacross.visualize import render_live_snapshot_svg, render_pass_svg
 from lunacross.weather import WeatherSnapshot
@@ -36,6 +36,23 @@ _INDEX_HTML = """<!DOCTYPE html>
   .card { background: #0f172a; border: 1px solid #1e293b; border-radius: 10px; padding: 14px; margin-bottom: 16px; }
   .meta { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: #94a3b8; margin-bottom: 10px; font-family: ui-monospace, monospace; }
   .meta strong { color: #f8fafc; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+  @media (max-width: 900px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 520px) { .kpi-grid { grid-template-columns: 1fr; } }
+  .kpi { background: #020617; border: 1px solid #1e293b; border-radius: 8px; padding: 9px 12px; min-width: 0; }
+  .kpi-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 3px; }
+  .kpi-val { font-size: 13px; font-weight: 600; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, monospace; }
+  .kpi-sub { font-size: 11.5px; color: #94a3b8; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .dot-green { background: #22c55e; }
+  .dot-amber { background: #f59e0b; }
+  .dot-red { background: #ef4444; }
+  .dot-slate { background: #64748b; }
+  .badge-INCOMING { background: #164e63; color: #a5f3fc; }
+  .badge-TRACKING { background: #1e293b; color: #94a3b8; }
+  .actions-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+  .updated-txt { font-size: 12px; color: #64748b; font-family: ui-monospace, monospace; }
+  .section-title { font-size: 13px; font-weight: 600; color: #cbd5e1; margin: 0 0 8px 0; display: flex; justify-content: space-between; align-items: center; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #1e293b; }
   th { color: #94a3b8; font-weight: 600; }
@@ -78,12 +95,32 @@ _INDEX_HTML = """<!DOCTYPE html>
 
   <section id="panel-live">
     <div class="card">
-      <div class="meta" id="live-meta">Loading live sky state...</div>
-      <div id="live-svg"></div>
-      <div class="actions">
-        <a class="btn" href="/api/live.svg" download="lunacross_live.svg">Download Live SVG</a>
-        <a class="btn" href="/api/live.json" target="_blank">Live JSON</a>
+      <div class="kpi-grid" id="live-meta">
+        <div class="kpi"><div class="kpi-label">Moon</div><div class="kpi-val">Loading...</div><div class="kpi-sub">&nbsp;</div></div>
+        <div class="kpi"><div class="kpi-label">Sky / Weather</div><div class="kpi-val">Loading...</div><div class="kpi-sub">&nbsp;</div></div>
+        <div class="kpi"><div class="kpi-label">ADS-B Feed</div><div class="kpi-val">Loading...</div><div class="kpi-sub">&nbsp;</div></div>
+        <div class="kpi"><div class="kpi-label">Closest to Moon</div><div class="kpi-val">Loading...</div><div class="kpi-sub">&nbsp;</div></div>
       </div>
+      <div id="live-svg"></div>
+      <div class="actions-bar">
+        <div class="actions" style="margin-top:0;">
+          <a class="btn" href="/api/live.svg" download="lunacross_live.svg">Download Live SVG</a>
+          <a class="btn" href="/api/live.json" target="_blank">Live JSON</a>
+        </div>
+        <span class="updated-txt" id="live-updated">Waiting for update...</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-title">
+        <span>Closest Aircraft to the Moon</span>
+        <span class="updated-txt" id="live-aircraft-count"></span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Flight</th><th>Type</th><th>Altitude</th><th>Range</th><th>Sky (Az / Alt)</th><th>Δ Moon</th><th>Prediction</th><th>Status</th></tr>
+        </thead>
+        <tbody id="live-aircraft-body"><tr><td colspan="8">Loading...</td></tr></tbody>
+      </table>
     </div>
   </section>
 
@@ -158,14 +195,55 @@ async function refreshLive() {
       const meta = document.getElementById('live-meta');
       if (m) {
         const wx = data.weather;
-        const wxHtml = wx
-          ? `<span>Sky: <strong>${wx.condition_label}</strong> (${wx.temperature_c.toFixed(1)}°C, ${wx.pressure_msl_hpa.toFixed(0)} hPa)</span>`
-          : '';
+        let skyDot = 'dot-slate';
+        if (wx) {
+          skyDot = wx.sky_obstruction_pct < 45 ? 'dot-green' : (wx.sky_obstruction_pct <= 85 ? 'dot-amber' : 'dot-red');
+        }
+        const skyVal = wx ? `<span class="dot ${skyDot}"></span>${wx.condition_label}` : 'Unavailable';
+        const skySub = wx ? `${wx.temperature_c.toFixed(1)}°C · ${wx.pressure_msl_hpa.toFixed(0)} hPa` : 'Standard atmosphere';
+        const feedDot = data.feed_ok ? 'dot-green' : 'dot-red';
+        const closest = data.sightings && data.sightings.length ? data.sightings[0] : null;
+        const closestVal = closest ? `${closest.flight} · ${closest.angular_sep_deg.toFixed(1)}°` : 'No aircraft';
+        const closestSub = closest
+          ? `${closest.altitude_ft.toLocaleString()} ft · ${closest.slant_range_km.toFixed(1)} km`
+          : 'Waiting for traffic';
+
         meta.innerHTML =
-          `<span>Moon: <strong>${m.altitude_deg.toFixed(1)}° alt / ${m.azimuth_deg.toFixed(1)}° az</strong> (${m.phase_name}, ${m.illumination_pct.toFixed(1)}%)</span>` +
-          wxHtml +
-          `<span>Feed: <strong>${data.feed_ok ? 'Live connected' : 'Disconnected'}</strong></span>` +
-          `<span>Airborne: <strong>${data.sightings.length}/${data.total_raw}</strong></span>`;
+          `<div class="kpi"><div class="kpi-label">Moon</div><div class="kpi-val">${m.altitude_deg >= 0 ? '+' : ''}${m.altitude_deg.toFixed(1)}° / ${m.azimuth_deg.toFixed(1)}° ${m.compass || ''}</div><div class="kpi-sub">${m.phase_name} · ${m.illumination_pct.toFixed(1)}% lit</div></div>` +
+          `<div class="kpi"><div class="kpi-label">Sky / Weather</div><div class="kpi-val" title="${wx ? wx.condition_label : ''}">${skyVal}</div><div class="kpi-sub">${skySub}</div></div>` +
+          `<div class="kpi"><div class="kpi-label">ADS-B Feed</div><div class="kpi-val"><span class="dot ${feedDot}"></span>${data.feed_ok ? 'Live connected' : 'Disconnected'}</div><div class="kpi-sub">${data.sightings.length} airborne · ${data.total_raw} feed total</div></div>` +
+          `<div class="kpi"><div class="kpi-label">Closest to Moon</div><div class="kpi-val">${closestVal}</div><div class="kpi-sub">${closestSub}</div></div>`;
+      }
+
+      const updEl = document.getElementById('live-updated');
+      if (data.updated_utc) {
+        const dtStr = new Date(data.updated_utc).toLocaleTimeString();
+        updEl.innerHTML = `<span class="dot ${data.feed_ok ? 'dot-green' : 'dot-red'}"></span>Updated ${dtStr}`;
+      }
+
+      const countEl = document.getElementById('live-aircraft-count');
+      const tbody = document.getElementById('live-aircraft-body');
+      const list = data.sightings || [];
+      countEl.textContent = `Showing ${Math.min(list.length, 8)} of ${list.length} airborne`;
+      if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="8" style="color:#64748b;">No airborne aircraft tracked right now.</td></tr>';
+      } else {
+        tbody.innerHTML = list.slice(0, 8).map(s => {
+          const pred = (s.min_predicted_sep_deg !== null && s.time_to_closest_s !== null)
+            ? `${s.min_predicted_sep_deg.toFixed(2)}° in ${Math.round(s.time_to_closest_s)}s`
+            : '-';
+          const acType = s.aircraft_type || s.category || '-';
+          return `<tr>` +
+            `<td><strong>${s.flight}</strong></td>` +
+            `<td>${acType}</td>` +
+            `<td>${s.altitude_ft.toLocaleString()} ft</td>` +
+            `<td>${s.slant_range_km.toFixed(1)} km</td>` +
+            `<td style="font-family:ui-monospace,monospace;">${s.aircraft_az_deg.toFixed(1)}° / ${s.aircraft_alt_deg >= 0 ? '+' : ''}${s.aircraft_alt_deg.toFixed(1)}°</td>` +
+            `<td style="font-family:ui-monospace,monospace;">${s.angular_sep_deg.toFixed(2)}° (${s.moon_radii.toFixed(1)}R)</td>` +
+            `<td style="font-family:ui-monospace,monospace;">${pred}</td>` +
+            `<td><span class="badge badge-${s.status}">${s.status}</span></td>` +
+            `</tr>`;
+        }).join('');
       }
     }
     if (sRes.ok) {
@@ -466,6 +544,7 @@ class _Handler(BaseHTTPRequestHandler):
                     {
                         "altitude_deg": round(moon.altitude_deg, 3),
                         "azimuth_deg": round(moon.azimuth_deg, 3),
+                        "compass": compass_direction(moon.azimuth_deg),
                         "angular_diameter_deg": round(moon.angular_diameter_deg, 4),
                         "illumination_pct": round(moon.illumination_pct, 1),
                         "phase_deg": round(moon.phase_deg, 2),
@@ -481,12 +560,20 @@ class _Handler(BaseHTTPRequestHandler):
                     {
                         "flight": s.aircraft.flight,
                         "hex": s.aircraft.hex,
+                        "aircraft_type": s.aircraft.aircraft_type,
+                        "category": s.aircraft.category,
                         "altitude_ft": round(s.aircraft.altitude_ft),
                         "slant_range_km": round(s.sky_pos.slant_range_km, 2),
                         "aircraft_alt_deg": round(s.sky_pos.altitude_deg, 2),
                         "aircraft_az_deg": round(s.sky_pos.azimuth_deg, 2),
                         "angular_sep_deg": round(s.angular_sep_deg, 3),
                         "moon_radii": round(s.moon_radii, 2),
+                        "min_predicted_sep_deg": (
+                            round(s.min_predicted_sep_deg, 3) if s.min_predicted_sep_deg is not None else None
+                        ),
+                        "time_to_closest_s": (
+                            round(s.time_to_closest_s, 1) if s.time_to_closest_s is not None else None
+                        ),
                         "status": s.status,
                     }
                     for s in sightings
