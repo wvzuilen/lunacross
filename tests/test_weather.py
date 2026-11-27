@@ -17,8 +17,88 @@ from lunacross.moon import MoonPosition, MoonTracker
 from lunacross import notifier as notifier_mod
 from lunacross.notifier import TransitNotifier, is_in_quiet_hours
 from lunacross.visualize import render_pass_svg
-from lunacross.weather import WeatherClient, parse_open_meteo_payload
+from lunacross.weather import (
+    WeatherClient,
+    parse_metar_station,
+    parse_open_meteo_payload,
+    select_nearest_metar_snapshot,
+)
 from lunacross.web import LiveState, LunaCrossWebServer
+
+
+def test_parse_metar_ceilometer_layers_and_nearest_selection() -> None:
+    now = datetime(2026, 11, 27, 19, 30, 0, tzinfo=timezone.utc)
+    ehdl = {
+        "icaoId": "EHDL",
+        "obsTime": int(now.timestamp()) - 300,
+        "temp": -2,
+        "dewp": -5,
+        "visib": "6+",
+        "altim": 1027,
+        "rawOb": "METAR EHDL 271925Z AUTO 09006KT 9999 OVC300 M02/M05 Q1027 BLU",
+        "lat": 52.061,
+        "lon": 5.887,
+        "cover": "OVC",
+        "clouds": [{"cover": "OVC", "base": 30000}],
+    }
+    edlv_cavok = {
+        "icaoId": "EDLV",
+        "obsTime": int(now.timestamp()) - 300,
+        "temp": -2,
+        "dewp": -5,
+        "visib": "6+",
+        "altim": 1027,
+        "rawOb": "METAR EDLV 271920Z 07004KT CAVOK M02/M05 Q1027",
+        "lat": 51.602,
+        "lon": 6.142,
+        "cover": "CAVOK",
+        "clouds": [],
+    }
+    low_overcast = {
+        "icaoId": "EHAM",
+        "obsTime": int(now.timestamp()) - 300,
+        "temp": 4,
+        "visib": 2.5,
+        "altim": 1008,
+        "rawOb": "METAR EHAM 271925Z 24015KT 4000 OVC008 04/03 Q1008",
+        "lat": 52.315,
+        "lon": 4.790,
+        "cover": "OVC",
+        "clouds": [{"cover": "OVC", "base": 800}],
+    }
+
+    # EHDL OVC at 30,000 ft is high cirrus (50% obstruction, NOT opaque overcast)
+    snap_ehdl = parse_metar_station(ehdl, observer_elevation_m=15.0, fetched_utc=now)
+    assert snap_ehdl is not None
+    assert snap_ehdl.source == "METAR:EHDL"
+    assert snap_ehdl.cloud_cover_low_pct == 0.0
+    assert snap_ehdl.cloud_cover_high_pct == 100.0
+    assert snap_ehdl.sky_obstruction_pct == pytest.approx(50.0)
+    assert "Thin high clouds" in snap_ehdl.condition_label
+    assert "EHDL" in snap_ehdl.condition_label
+    assert snap_ehdl.temperature_c == pytest.approx(-2.0)
+
+    # CAVOK -> 0% obstruction
+    snap_cavok = parse_metar_station(edlv_cavok, fetched_utc=now)
+    assert snap_cavok is not None
+    assert snap_cavok.sky_obstruction_pct == 0.0
+    assert "Clear" in snap_cavok.condition_label
+
+    # Low stratus at 800 ft -> 100% obstruction
+    snap_low = parse_metar_station(low_overcast, fetched_utc=now)
+    assert snap_low is not None
+    assert snap_low.sky_obstruction_pct == 100.0
+    assert "Overcast" in snap_low.condition_label
+
+    # Nearest station selection around (52.0, 5.9) picks EHDL over EDLV and EHAM
+    nearest = select_nearest_metar_snapshot(
+        [low_overcast, edlv_cavok, ehdl],
+        52.00,
+        5.90,
+        now_utc=now,
+    )
+    assert nearest is not None
+    assert nearest.source == "METAR:EHDL"
 
 
 def test_parse_open_meteo_overcast_cirrus_and_fog() -> None:
@@ -111,6 +191,8 @@ def test_weather_client_caches_requests(monkeypatch) -> None:
     def fake_get(self: Any, url: str, **kwargs: Any) -> _FakeResp:
         nonlocal call_count
         call_count += 1
+        if "aviationweather.gov" in url:
+            raise httpx.ConnectError("simulate fallback to Open-Meteo ICON")
         return _FakeResp()
 
     monkeypatch.setattr(httpx.Client, "get", fake_get)
@@ -119,12 +201,13 @@ def test_weather_client_caches_requests(monkeypatch) -> None:
         wx1 = client.get_weather()
         wx2 = client.get_weather()
         assert wx1 is not None
+        assert wx1.source == "open-meteo:icon"
         assert wx2 is wx1
-        assert call_count == 1
+        assert call_count == 2  # 1 METAR attempt + 1 ICON fallback, then cached!
 
     with WeatherClient(52.3731, 4.8926, enabled=False) as disabled:
         assert disabled.get_weather() is None
-        assert call_count == 1
+        assert call_count == 2
 
 
 def test_live_refraction_and_fallback_qnh() -> None:

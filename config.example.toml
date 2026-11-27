@@ -17,8 +17,8 @@ adsb_url = "http://adsb.local:8090/data/aircraft.json"
 supplement_radius_nm = 45.0
 supplement_interval_s = 5.0
 
-# Fetch local cloud cover, temperature, and pressure via Open-Meteo (no API key required)
-# Used for live atmospheric refraction, fallback QNH, and cloud-cover Pushover filtering
+# Fetch local cloud cover, temperature, and QNH via nearest airport METAR ceilometer + Open-Meteo ICON fallback
+# Used for live atmospheric refraction, fallback QNH, and cloud-cover Pushover filtering (no API key required)
 weather_enabled = true
 weather_interval_s = 600.0
 

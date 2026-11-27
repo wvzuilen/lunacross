@@ -1,7 +1,8 @@
-"""Local weather, cloud-cover obstruction, and atmospheric state via Open-Meteo."""
+"""Local weather, cloud-cover obstruction, and atmospheric state via METAR ceilometers & Open-Meteo."""
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,7 +10,25 @@ from typing import Any
 
 import httpx
 
+AVIATION_WEATHER_METAR_URL = "https://aviationweather.gov/api/data/metar"
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+_EARTH_RADIUS_KM = 6371.0
+
+_METAR_COVER_PCT: dict[str, float] = {
+    "CLR": 0.0,
+    "SKC": 0.0,
+    "NSC": 0.0,
+    "NCD": 0.0,
+    "CAVOK": 0.0,
+    "FEW": 18.0,
+    "SCT": 44.0,
+    "BKN": 75.0,
+    "OVC": 100.0,
+    "OVX": 100.0,
+}
+
+_CLEAR_COVER_CODES = {"CLR", "SKC", "NSC", "NCD", "CAVOK"}
 
 _WMO_DESCRIPTIONS: dict[int, str] = {
     0: "Clear sky",
@@ -53,6 +72,22 @@ def _clamp_pct(value: float) -> float:
     return max(0.0, min(100.0, value))
 
 
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2.0) ** 2
+    return 2.0 * _EARTH_RADIUS_KM * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
+
+
+def _surface_pressure_from_msl(pressure_msl_hpa: float, elevation_m: float, temp_c: float) -> float:
+    if abs(elevation_m) < 0.5:
+        return pressure_msl_hpa
+    t_kelvin = max(200.0, temp_c + 273.15)
+    factor = (1.0 - (0.0065 * elevation_m) / (t_kelvin + 0.0065 * elevation_m)) ** 5.257
+    return pressure_msl_hpa * factor
+
+
 def compute_sky_obstruction_pct(
     cloud_cover_pct: float,
     cloud_low_pct: float | None = None,
@@ -86,27 +121,29 @@ def format_sky_condition(
     sky_obstruction_pct: float,
     cloud_high_pct: float | None = None,
     weather_code: int | None = None,
+    source_tag: str | None = None,
 ) -> str:
-    """Build a concise English sky condition label."""
+    """Build a concise English sky condition label with optional station/source tag."""
+    suffix = f" · {source_tag}" if source_tag else ""
     if weather_code in {45, 48}:
-        return f"Fog ({sky_obstruction_pct:.0f}% obstructed)"
+        return f"Fog ({sky_obstruction_pct:.0f}% obstructed){suffix}"
     if (
         cloud_high_pct is not None
-        and cloud_high_pct >= 50.0
+        and cloud_high_pct >= 40.0
         and sky_obstruction_pct <= 55.0
-        and cloud_cover_pct >= 60.0
+        and cloud_cover_pct >= 40.0
     ):
-        return f"Thin high clouds ({cloud_high_pct:.0f}% cirrus)"
+        return f"Thin high clouds ({cloud_high_pct:.0f}% cirrus){suffix}"
     if sky_obstruction_pct < 15.0:
-        return f"Clear ({cloud_cover_pct:.0f}% clouds)"
+        return f"Clear ({cloud_cover_pct:.0f}% clouds){suffix}"
     if sky_obstruction_pct < 45.0:
-        return f"Partly cloudy ({cloud_cover_pct:.0f}% clouds)"
+        return f"Partly cloudy ({cloud_cover_pct:.0f}% clouds){suffix}"
     if sky_obstruction_pct < 80.0:
-        return f"Mostly cloudy ({cloud_cover_pct:.0f}% clouds)"
+        return f"Mostly cloudy ({cloud_cover_pct:.0f}% clouds){suffix}"
     base = _WMO_DESCRIPTIONS.get(weather_code or -1, "Overcast")
     if base in {"Clear sky", "Mainly clear", "Partly cloudy"}:
         base = "Overcast"
-    return f"{base} ({cloud_cover_pct:.0f}% clouds)"
+    return f"{base} ({cloud_cover_pct:.0f}% clouds){suffix}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,10 +162,12 @@ class WeatherSnapshot:
     weather_code: int | None
     sky_obstruction_pct: float
     condition_label: str
+    source: str = "open-meteo"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "fetched_utc": self.fetched_utc.isoformat(),
+            "source": self.source,
             "temperature_c": round(self.temperature_c, 1),
             "pressure_msl_hpa": round(self.pressure_msl_hpa, 1),
             "surface_pressure_hpa": round(self.surface_pressure_hpa, 1),
@@ -143,10 +182,186 @@ class WeatherSnapshot:
         }
 
 
+def _parse_metar_visibility_km(visib: Any, raw_ob: str) -> float | None:
+    if " 9999 " in f" {raw_ob} " or "CAVOK" in raw_ob:
+        return 10.0
+    if isinstance(visib, (int, float)) and not isinstance(visib, bool):
+        return round(float(visib) * 1.60934, 2)
+    if isinstance(visib, str):
+        cleaned = visib.strip().rstrip("+").strip()
+        if not cleaned:
+            return None
+        try:
+            if "/" in cleaned:
+                parts = cleaned.split()
+                total_sm = 0.0
+                for part in parts:
+                    if "/" in part:
+                        n_s, d_s = part.split("/", 1)
+                        total_sm += float(n_s) / float(d_s)
+                    else:
+                        total_sm += float(part)
+                return round(total_sm * 1.60934, 2)
+            return round(float(cleaned) * 1.60934, 2)
+        except ValueError:
+            return None
+    return None
+
+
+def parse_metar_station(
+    station: dict[str, Any],
+    *,
+    observer_elevation_m: float = 0.0,
+    fetched_utc: datetime | None = None,
+) -> WeatherSnapshot | None:
+    """Convert a single AviationWeather METAR JSON record into a WeatherSnapshot.
+
+    Returns None if the station lacks usable ceilometer/cloud coverage information.
+    """
+    icao = str(station.get("icaoId") or "").strip().upper()
+    raw_ob = str(station.get("rawOb") or "")
+    top_cover = str(station.get("cover") or "").strip().upper()
+    clouds_raw = station.get("clouds")
+    clouds_list = clouds_raw if isinstance(clouds_raw, list) else []
+
+    # Reject automated stations whose ceilometer data is missing (e.g. '///' with no layers)
+    if not clouds_list and top_cover not in _METAR_COVER_PCT:
+        if not any(tok in f" {raw_ob} " for tok in (" CAVOK ", " SKC ", " CLR ", " NCD ", " NSC ")):
+            return None
+
+    low_pct = 0.0
+    mid_pct = 0.0
+    high_pct = 0.0
+
+    for layer in clouds_list:
+        if not isinstance(layer, dict):
+            continue
+        cov_code = str(layer.get("cover") or "").strip().upper()
+        pct = _METAR_COVER_PCT.get(cov_code)
+        if pct is None:
+            continue
+        base_ft = layer.get("base")
+        if cov_code == "OVX" or not (isinstance(base_ft, (int, float)) and not isinstance(base_ft, bool)):
+            low_pct = max(low_pct, pct)
+        elif float(base_ft) < 6500.0:
+            low_pct = max(low_pct, pct)
+        elif float(base_ft) < 20000.0:
+            mid_pct = max(mid_pct, pct)
+        else:
+            high_pct = max(high_pct, pct)
+
+    if not clouds_list:
+        if top_cover == "OVX":
+            low_pct = 100.0
+        elif top_cover in _METAR_COVER_PCT and top_cover not in _CLEAR_COVER_CODES:
+            low_pct = _METAR_COVER_PCT[top_cover]
+
+    cloud_total = max(low_pct, mid_pct, high_pct)
+
+    temp_c = _as_float(station.get("temp"), 10.0)
+    raw_altim = station.get("altim")
+    if isinstance(raw_altim, (int, float)) and not isinstance(raw_altim, bool):
+        val = float(raw_altim)
+        pressure_msl = val * 33.8639 if val < 100.0 else val
+    else:
+        pressure_msl = 1013.25
+    surface_pressure = _surface_pressure_from_msl(pressure_msl, observer_elevation_m, temp_c)
+
+    vis_km = _parse_metar_visibility_km(station.get("visib"), raw_ob)
+    wx_str = str(station.get("wxString") or "").upper()
+    is_fog = "FG" in wx_str or top_cover == "OVX"
+    wmo_code: int | None = 45 if is_fog else (0 if cloud_total == 0.0 else None)
+
+    obstruction = compute_sky_obstruction_pct(
+        cloud_total,
+        low_pct,
+        mid_pct,
+        high_pct,
+        visibility_km=vis_km,
+        weather_code=wmo_code,
+    )
+    label = format_sky_condition(
+        cloud_total,
+        obstruction,
+        high_pct,
+        weather_code=wmo_code,
+        source_tag=icao or None,
+    )
+    ts = fetched_utc or datetime.now(timezone.utc)
+    return WeatherSnapshot(
+        fetched_utc=ts,
+        temperature_c=temp_c,
+        pressure_msl_hpa=pressure_msl,
+        surface_pressure_hpa=surface_pressure,
+        cloud_cover_pct=cloud_total,
+        cloud_cover_low_pct=low_pct,
+        cloud_cover_mid_pct=mid_pct,
+        cloud_cover_high_pct=high_pct,
+        visibility_km=vis_km,
+        weather_code=wmo_code,
+        sky_obstruction_pct=obstruction,
+        condition_label=label,
+        source=f"METAR:{icao}" if icao else "METAR",
+    )
+
+
+def select_nearest_metar_snapshot(
+    stations: list[dict[str, Any]],
+    observer_lat: float,
+    observer_lon: float,
+    *,
+    observer_elevation_m: float = 0.0,
+    max_distance_km: float = 60.0,
+    max_obs_age_s: float = 5400.0,
+    now_utc: datetime | None = None,
+) -> WeatherSnapshot | None:
+    """Pick the closest fresh METAR ceilometer station to the observer."""
+    cur_utc = now_utc or datetime.now(timezone.utc)
+    cur_unix = cur_utc.timestamp()
+
+    candidates: list[tuple[float, WeatherSnapshot]] = []
+    for st in stations:
+        if not isinstance(st, dict):
+            continue
+        slat = st.get("lat")
+        slon = st.get("lon")
+        if not (
+            isinstance(slat, (int, float))
+            and not isinstance(slat, bool)
+            and isinstance(slon, (int, float))
+            and not isinstance(slon, bool)
+        ):
+            continue
+        dist_km = _haversine_km(observer_lat, observer_lon, float(slat), float(slon))
+        if dist_km > max_distance_km:
+            continue
+
+        obs_time = st.get("obsTime")
+        if isinstance(obs_time, (int, float)) and not isinstance(obs_time, bool):
+            # Reject stale METARs (> max_obs_age_s old relative to report clock)
+            age_s = cur_unix - float(obs_time)
+            if age_s > max_obs_age_s:
+                continue
+
+        snap = parse_metar_station(
+            st,
+            observer_elevation_m=observer_elevation_m,
+            fetched_utc=cur_utc,
+        )
+        if snap is not None:
+            candidates.append((dist_km, snap))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
 def parse_open_meteo_payload(
     data: dict[str, Any],
     *,
     fetched_utc: datetime | None = None,
+    source_tag: str | None = None,
 ) -> WeatherSnapshot:
     """Parse an Open-Meteo /v1/forecast JSON response into a WeatherSnapshot."""
     cur = data.get("current")
@@ -193,6 +408,7 @@ def parse_open_meteo_payload(
         obstruction,
         cloud_high if has_layers else None,
         weather_code=wmo_code,
+        source_tag=source_tag,
     )
     return WeatherSnapshot(
         fetched_utc=ts,
@@ -207,28 +423,33 @@ def parse_open_meteo_payload(
         weather_code=wmo_code,
         sky_obstruction_pct=obstruction,
         condition_label=label,
+        source="open-meteo:icon",
     )
 
 
 class WeatherClient:
-    """Cached HTTP client for Open-Meteo local atmospheric & cloud-cover conditions."""
+    """Cached HTTP client using nearby METAR ceilometers first and Open-Meteo ICON as fallback."""
 
     def __init__(
         self,
         latitude: float,
         longitude: float,
         *,
+        elevation_m: float = 0.0,
         enabled: bool = True,
         refresh_interval_s: float = 600.0,
         max_stale_s: float = 3600.0,
         timeout_s: float = 4.0,
+        metar_url: str = AVIATION_WEATHER_METAR_URL,
         base_url: str = OPEN_METEO_FORECAST_URL,
     ) -> None:
         self.latitude = latitude
         self.longitude = longitude
+        self.elevation_m = elevation_m
         self.enabled = enabled
         self.refresh_interval_s = max(60.0, float(refresh_interval_s))
         self.max_stale_s = max(self.refresh_interval_s, float(max_stale_s))
+        self.metar_url = metar_url
         self.base_url = base_url
         self._client = httpx.Client(
             timeout=timeout_s,
@@ -247,8 +468,43 @@ class WeatherClient:
     def close(self) -> None:
         self._client.close()
 
+    def _fetch_metar(self) -> WeatherSnapshot | None:
+        dlat = 0.60
+        dlon = max(0.60, 0.60 / max(0.25, abs(math.cos(math.radians(self.latitude)))))
+        bbox = (
+            f"{self.latitude - dlat:.3f},{self.longitude - dlon:.3f},"
+            f"{self.latitude + dlat:.3f},{self.longitude + dlon:.3f}"
+        )
+        resp = self._client.get(self.metar_url, params={"bbox": bbox, "format": "json"})
+        resp.raise_for_status()
+        payload = resp.json()
+        if not isinstance(payload, list):
+            return None
+        return select_nearest_metar_snapshot(
+            payload,
+            self.latitude,
+            self.longitude,
+            observer_elevation_m=self.elevation_m,
+        )
+
+    def _fetch_open_meteo_icon(self) -> WeatherSnapshot:
+        params = {
+            "latitude": f"{self.latitude:.4f}",
+            "longitude": f"{self.longitude:.4f}",
+            "current": (
+                "temperature_2m,pressure_msl,surface_pressure,"
+                "cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,"
+                "visibility,weather_code"
+            ),
+            "models": "icon_seamless",
+            "timezone": "UTC",
+        }
+        resp = self._client.get(self.base_url, params=params)
+        resp.raise_for_status()
+        return parse_open_meteo_payload(resp.json(), source_tag="ICON")
+
     def get_weather(self) -> WeatherSnapshot | None:
-        """Return current or cached WeatherSnapshot, refreshing periodically without raising."""
+        """Return current or cached WeatherSnapshot, preferring real METAR ceilometers."""
         if not self.enabled:
             return None
 
@@ -260,7 +516,6 @@ class WeatherClient:
         ):
             return self._cached
 
-        # Back off for 60s after any failed attempt so network hiccups never stall polling
         if (
             self._last_attempt_mono is not None
             and (now_mono - self._last_attempt_mono) < 60.0
@@ -274,20 +529,21 @@ class WeatherClient:
             return None
 
         self._last_attempt_mono = now_mono
-        params = {
-            "latitude": f"{self.latitude:.4f}",
-            "longitude": f"{self.longitude:.4f}",
-            "current": (
-                "temperature_2m,pressure_msl,surface_pressure,"
-                "cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,"
-                "visibility,weather_code"
-            ),
-            "timezone": "UTC",
-        }
+
+        # 1. Try real airport METAR ceilometer within 60 km
         try:
-            resp = self._client.get(self.base_url, params=params)
-            resp.raise_for_status()
-            self._cached = parse_open_meteo_payload(resp.json())
+            metar_snap = self._fetch_metar()
+            if metar_snap is not None:
+                self._cached = metar_snap
+                self._cached_mono = now_mono
+                return self._cached
+        except Exception:
+            pass
+
+        # 2. Fall back to DWD ICON seamless model via Open-Meteo
+        try:
+            icon_snap = self._fetch_open_meteo_icon()
+            self._cached = icon_snap
             self._cached_mono = now_mono
             return self._cached
         except Exception:

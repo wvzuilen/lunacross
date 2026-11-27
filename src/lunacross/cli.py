@@ -260,6 +260,7 @@ def _make_weather_client(cfg: Config) -> WeatherClient:
     return WeatherClient(
         cfg.latitude,
         cfg.longitude,
+        elevation_m=cfg.elevation_m,
         enabled=cfg.weather_enabled,
         refresh_interval_s=cfg.weather_interval_s,
     )
